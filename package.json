@@ -1,0 +1,31 @@
+{
+  "name": "pi-agenthint",
+  "version": "0.1.0",
+  "description": "Agent Hint v2 request metadata and lifecycle reporting for Pi",
+  "type": "module",
+  "license": "UNLICENSED",
+  "keywords": ["pi-package", "pi-extension", "agent-hint", "observability", "scheduling"],
+  "files": ["src", "README.md"],
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "pi": {
+    "extensions": ["./src/extension.js"]
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "check": "npm test && npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.1.0"
+  }
+}
