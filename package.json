@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "Agent Hint v2 request metadata and lifecycle reporting for Pi",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "keywords": ["pi-package", "pi-extension", "agent-hint", "observability", "scheduling"],
-  "files": ["src", "README.md"],
+  "files": ["src", "README.md", "LICENSE"],
   "exports": {
     ".": {
       "types": "./src/index.d.ts",

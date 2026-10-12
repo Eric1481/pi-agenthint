@@ -96,5 +96,4 @@ runtime; it is not bundled into the package.
 
 ## License
 
-No open-source license has yet been granted for the extracted AscendAgent implementation. The npm
-metadata is therefore `UNLICENSED` until the project owner explicitly selects a license.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).

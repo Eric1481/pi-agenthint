@@ -12,6 +12,8 @@ test('manifest is a discoverable standalone Pi package', () => {
   assert.equal(manifest.dependencies, undefined);
 });
 
-test('package does not claim an unapproved open-source license', () => {
-  assert.equal(manifest.license, 'UNLICENSED');
+test('package carries the approved Apache-2.0 license', () => {
+  assert.equal(manifest.license, 'Apache-2.0');
+  assert.ok(manifest.files.includes('LICENSE'));
+  assert.match(readFileSync(new URL('../LICENSE', import.meta.url), 'utf8'), /Apache License/);
 });
