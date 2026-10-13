@@ -1,11 +1,23 @@
 {
   "name": "pi-agenthint",
-  "version": "0.1.0",
-  "description": "Agent Hint v2 request metadata and lifecycle reporting for Pi",
+  "version": "0.1.1",
+  "description": "Agent Hint request metadata and lifecycle reporting for Pi",
   "type": "module",
   "license": "Apache-2.0",
-  "keywords": ["pi-package", "pi-extension", "agent-hint", "observability", "scheduling"],
-  "files": ["src", "README.md", "LICENSE"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "agent-hint",
+    "provider",
+    "request-headers",
+    "observability",
+    "scheduling"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
@@ -13,10 +25,14 @@
     }
   },
   "pi": {
-    "extensions": ["./src/extension.js"]
+    "extensions": [
+      "./src/extension.js"
+    ]
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\"",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test \"test/*.test.js\"",
+    "test:e2e": "node --test \"test/e2e/*.test.js\"",
     "check": "npm test && npm pack --dry-run"
   },
   "engines": {
