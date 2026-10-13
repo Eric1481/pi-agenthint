@@ -4,6 +4,14 @@
   "description": "Agent Hint request metadata and lifecycle reporting for Pi",
   "type": "module",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/Eric1481/pi-agenthint#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Eric1481/pi-agenthint.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Eric1481/pi-agenthint/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",

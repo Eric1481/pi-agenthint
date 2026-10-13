@@ -8,6 +8,12 @@ test('manifest is a discoverable standalone Pi package', () => {
   assert.equal(manifest.name, 'pi-agenthint');
   assert.equal(manifest.description, 'Agent Hint request metadata and lifecycle reporting for Pi');
   assert.doesNotMatch(manifest.description, /v2/i);
+  assert.equal(manifest.homepage, 'https://github.com/Eric1481/pi-agenthint#readme');
+  assert.deepEqual(manifest.repository, {
+    type: 'git',
+    url: 'git+https://github.com/Eric1481/pi-agenthint.git',
+  });
+  assert.equal(manifest.bugs.url, 'https://github.com/Eric1481/pi-agenthint/issues');
   assert.ok(manifest.keywords.includes('pi-package'));
   assert.deepEqual(manifest.pi.extensions, ['./src/extension.js']);
   assert.equal(manifest.peerDependencies['@earendil-works/pi-coding-agent'], '*');
