@@ -182,6 +182,54 @@ test('a zero TTL publishes the pin alone rather than an entry with no lifetime',
   assert.deepEqual(hint.cache_control, [{ type: 'pin', range: { end: 1, unit: 'message' } }]);
 });
 
+test('the retention window follows the observed gap rather than a fixed default', () => {
+  // The next tool's own budget is the most accurate signal the harness has.
+  const withTool = buildHint({ stats: { nextTool: { name: 'bash', expectedDurationS: 120, prob: 0.8 } } }).hint;
+  assert.deepEqual(withTool.cache_control[1], {
+    type: 'ephemeral',
+    ttl_s: 240,
+    range: { end: 2, unit: 'message' },
+  });
+
+  // 12 s * 2 = 24 s sits below the protocol floor, so the declaration is raised to 60 s.
+  const shortTool = buildHint({ stats: { nextTool: { name: 'read', expectedDurationS: 12, prob: 0.9 } } }).hint;
+  assert.equal(shortTool.cache_control[1].ttl_s, 60);
+
+  // Without a tool prediction the observed inter-call interval decides.
+  const byInterval = buildHint({ stats: { intervalMs: 90_000 } }).hint;
+  assert.equal(byInterval.cache_control[1].ttl_s, 180);
+
+  // With nothing observed the protocol default gap applies, doubled by the safety factor.
+  assert.equal(buildHint().hint.cache_control[1].ttl_s, 600);
+});
+
+test('a gap beyond the protocol ceiling clamps to the ceiling instead of dropping the TTL', () => {
+  // 2 h * 2 = 4 h exceeds the 3600 s ceiling. Dropping the declaration would remove retention
+  // entirely, which measured strictly worse than clamping (P3, 2026-10-21: 600 s gap — no
+  // declaration 0% hit, 3600 s declaration 99.8%). The wire therefore carries the longest
+  // window it can express.
+  const hint = buildHint({ stats: { nextTool: { name: 'approval', expectedDurationS: 7200, prob: 1 } } }).hint;
+  assert.deepEqual(hint.cache_control, [
+    { type: 'pin', range: { end: 1, unit: 'message' } },
+    { type: 'ephemeral', ttl_s: build.TTL_MAX_S, range: { end: 2, unit: 'message' } },
+  ]);
+});
+
+test('an explicitly configured TTL overrides the derived one', () => {
+  const config = { ...CONFIG, cacheTtlS: 300 };
+  const hint = buildHint({ config, stats: { nextTool: { name: 'bash', expectedDurationS: 120, prob: 0.8 } } }).hint;
+  assert.equal(hint.cache_control[1].ttl_s, 300);
+});
+
+test('estimateTtlS prefers the tool budget, then the interval, then the default', () => {
+  assert.equal(build.estimateTtlS({ toolExpectedDurationS: 120, intervalMs: 5_000 }), 240);
+  assert.equal(build.estimateTtlS({ intervalMs: 5_000 }), 60);
+  assert.equal(build.estimateTtlS({}), 600);
+  assert.equal(build.estimateTtlS({ toolExpectedDurationS: 7200 }), build.TTL_MAX_S);
+  assert.equal(build.estimateTtlS({ toolExpectedDurationS: 0, intervalMs: 0 }), 600);
+  assert.equal(build.TTL_SAFETY_FACTOR, 2);
+});
+
 test('an unknown context size publishes no cache control instead of a guessed range', () => {
   const hint = buildHint({ contextMessageCount: undefined }).hint;
   assert.equal(hint.cache_control, undefined, 'a range over an unknown model input is a guess');

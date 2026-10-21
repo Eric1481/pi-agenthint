@@ -93,7 +93,7 @@ PI_AGENTHINT_CONFIG=/absolute/path/to/agenthint.json pi
   "humanApprovalWaitMs": 300000,
   "humanInputWaitMs": 60000,
   "cacheControl": true,
-  "cacheTtlS": 600,
+  "cacheTtlS": null,
   "priority": true,
   "prediction": true,
   "predictionWindow": 20,
@@ -120,7 +120,7 @@ PI_AGENTHINT_CONFIG=/absolute/path/to/agenthint.json pi
 | `humanApprovalWaitMs` | integer | `300000` | Expected approval-wait budget used for bounded predictions. |
 | `humanInputWaitMs` | integer | `60000` | Expected non-approval human-input wait budget. |
 | `cacheControl` | boolean | `true` | Publish provider-visible logical message ranges. |
-| `cacheTtlS` | integer | `600` | Lifetime for the optional ephemeral cache range; zero keeps only the pin. |
+| `cacheTtlS` | integer \| null | `null` | Retention seconds for the ephemeral range. `null` derives it from the observed gap (next tool's expected duration, else the inter-call interval, else 300 s, doubled and clamped to 60–3600); `0` keeps only the pin; a number fixes it. |
 | `priority` | boolean | `true` | Publish the locally derived advisory priority. |
 | `prediction` | boolean | `true` | Publish estimates only after enough completed observations exist. |
 | `predictionWindow` | integer | `20` | Maximum recent samples retained per bounded statistics bucket. |

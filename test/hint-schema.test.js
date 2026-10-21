@@ -146,12 +146,34 @@ test('the budget ladder drops whole optional groups and never the session', () =
   const hint = valid();
   const sizeOf = (value) => JSON.stringify(value).length;
   // A budget only the session block can satisfy: everything optional is shed, in the documented
-  // order, and the result stays a valid hint.
+  // order, and the result stays a valid hint. `cache_control` is shed last because losing the
+  // retention declaration is the only loss the consumer cannot compensate for.
   const fitted = fitToBudget(hint, sizeOf, sizeOf({ session: hint.session }));
   assert.notEqual(fitted, undefined);
-  assert.deepEqual(fitted.dropped, ['prediction', 'priority', 'cache_control', 'agent_status']);
+  assert.deepEqual(fitted.dropped, ['prediction', 'priority', 'agent_status', 'cache_control']);
   assert.deepEqual(fitted.hint, { session: hint.session });
   assert.deepEqual(validateAgentHint(fitted.hint), []);
+});
+
+test('cache_control survives the budget ladder longer than any other optional group', () => {
+  const hint = valid();
+  const sizeOf = (value) => JSON.stringify(value).length;
+  // Exactly enough room for session + every group except prediction: only prediction is shed,
+  // so a declaration that fits this budget reaches the wire with its retention intent intact.
+  const withoutPrediction = { ...hint };
+  delete withoutPrediction.prediction;
+  const fitted = fitToBudget(hint, sizeOf, sizeOf(withoutPrediction));
+  assert.notEqual(fitted, undefined);
+  assert.deepEqual(fitted.dropped, ['prediction']);
+  assert.notEqual(fitted.hint.cache_control, undefined, 'retention must not be the first thing dropped');
+
+  // One byte tighter than session + cache_control: the ladder now has to touch other groups,
+  // and cache_control is still the last one standing.
+  const sessionAndCache = { session: hint.session, cache_control: hint.cache_control };
+  const tight = fitToBudget(hint, sizeOf, sizeOf(sessionAndCache));
+  assert.notEqual(tight, undefined);
+  assert.deepEqual(tight.hint, sessionAndCache);
+  assert.deepEqual(tight.dropped, ['prediction', 'priority', 'agent_status']);
 });
 
 test('the budget ladder reports failure instead of inventing a smaller hint', () => {

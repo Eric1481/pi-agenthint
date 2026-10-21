@@ -19,7 +19,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   humanApprovalWaitMs: 300000,
   humanInputWaitMs: 60000,
   cacheControl: true,
-  cacheTtlS: 600,
+  /** null = derive the retention window from runtime signals; a number pins it explicitly. */
+  cacheTtlS: null,
   priority: true,
   prediction: true,
   predictionWindow: 20,
@@ -66,6 +67,19 @@ function integer(value, path, fallback, minimum = 0) {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < minimum) {
     throw new ConfigError(path, `expected an integer >= ${minimum}`);
+  }
+  return value;
+}
+
+/**
+ * An integer that may also be `null`, used where `null` carries a distinct meaning from `0`
+ * (absent = derive, 0 = disabled, positive = fixed value).
+ */
+function nullableInteger(value, path, fallback, minimum = 0) {
+  if (value === undefined) return fallback;
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new ConfigError(path, `expected null or an integer >= ${minimum}`);
   }
   return value;
 }
@@ -123,7 +137,7 @@ export function parseConfig(value = {}) {
     humanApprovalWaitMs: integer(root.humanApprovalWaitMs, 'humanApprovalWaitMs', DEFAULT_CONFIG.humanApprovalWaitMs),
     humanInputWaitMs: integer(root.humanInputWaitMs, 'humanInputWaitMs', DEFAULT_CONFIG.humanInputWaitMs),
     cacheControl: boolean(root.cacheControl, 'cacheControl', DEFAULT_CONFIG.cacheControl),
-    cacheTtlS: integer(root.cacheTtlS, 'cacheTtlS', DEFAULT_CONFIG.cacheTtlS),
+    cacheTtlS: nullableInteger(root.cacheTtlS, 'cacheTtlS', DEFAULT_CONFIG.cacheTtlS),
     priority: boolean(root.priority, 'priority', DEFAULT_CONFIG.priority),
     prediction: boolean(root.prediction, 'prediction', DEFAULT_CONFIG.prediction),
     predictionWindow: integer(root.predictionWindow, 'predictionWindow', DEFAULT_CONFIG.predictionWindow, 1),

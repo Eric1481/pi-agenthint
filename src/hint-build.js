@@ -133,6 +133,50 @@ export function derivePriority(snapshot) {
 }
 
 /**
+ * Retention bounds shared with the receiving side (Motor clamps to the same window).
+ *
+ * A declaration shorter than {@link TTL_MIN_S} cannot be expressed; one longer than
+ * {@link TTL_MAX_S} is clamped rather than dropped. Measured behaviour (P3, 2026-10-21): the
+ * receiving engine keeps a prefix if and only if `ttl_s` exceeds the idle gap, and **dropping the
+ * declaration removes the protection entirely** — a 600 s gap with no declaration hit 0% of the
+ * time, while declaring 3600 s hit 99.8%. Clamping therefore strictly dominates returning
+ * `undefined`: an over-long gap still gets the longest retention the wire can carry.
+ */
+export const TTL_MIN_S = 60;
+export const TTL_MAX_S = 3600;
+
+/** How much slack to add over the estimated gap: under-estimating means no protection at all. */
+export const TTL_SAFETY_FACTOR = 2;
+
+/** Gap assumed when nothing has been observed yet (protocol default). */
+export const TTL_FALLBACK_GAP_S = 300;
+
+/**
+ * Estimate how long the prefix will stay usable, from the runtime signals Pi already has.
+ *
+ * Priority follows the source document (§3.3): the next tool's own expected duration is the most
+ * accurate signal, the observed inter-call interval is second, and only then the protocol default.
+ * The safety factor is deliberately applied before clamping: a budget that is slightly too large
+ * costs quota, one that is too small costs the cache hit entirely. The result is always inside
+ * `[TTL_MIN_S, TTL_MAX_S]` — see the note on {@link TTL_MAX_S} for why over-long gaps clamp
+ * instead of dropping the declaration.
+ *
+ * @param {{ toolExpectedDurationS?: number, intervalMs?: number }} [signals] observed runtime facts.
+ * @returns {number} retention seconds within the protocol window.
+ */
+export function estimateTtlS(signals = {}) {
+  const toolSeconds = signals.toolExpectedDurationS;
+  const interval = signals.intervalMs;
+  let gapSeconds;
+  if (Number.isFinite(toolSeconds) && toolSeconds > 0) gapSeconds = toolSeconds;
+  else if (Number.isFinite(interval) && interval > 0) gapSeconds = interval / 1000;
+  else gapSeconds = TTL_FALLBACK_GAP_S;
+
+  const raw = gapSeconds * TTL_SAFETY_FACTOR;
+  return Math.min(TTL_MAX_S, Math.max(TTL_MIN_S, Math.round(raw)));
+}
+
+/**
  * Build the `cache_control` declaration for this request.
  *
  * `range` describes **this request's logical model input**. Pi keeps the effective system prompt
@@ -330,10 +374,17 @@ export function buildAgentHint(input) {
   }
 
   if (config.cacheControl === true && snapshot.compactionArmed !== true && snapshot.branchArmed !== true) {
+    // A configured TTL is an explicit override; otherwise derive one from what has been observed.
+    const ttlS = config.cacheTtlS === null
+      ? estimateTtlS({
+          toolExpectedDurationS: input.stats?.nextTool?.expectedDurationS,
+          intervalMs: input.stats?.intervalMs,
+        })
+      : config.cacheTtlS;
     const control = deriveCacheControl({
       contextMessageCount: input.contextMessageCount,
       systemPromptPresent: input.systemPromptPresent === true,
-      cacheTtlS: config.cacheTtlS,
+      cacheTtlS: ttlS ?? 0,
     });
     if (control !== undefined) hint.cache_control = control;
   }

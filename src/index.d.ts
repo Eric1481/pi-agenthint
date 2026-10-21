@@ -16,7 +16,8 @@ export interface AgentHintConfig {
   humanApprovalWaitMs: number;
   humanInputWaitMs: number;
   cacheControl: boolean;
-  cacheTtlS: number;
+  /** null derives the retention window from runtime signals; 0 sends only the pin. */
+  cacheTtlS: number | null;
   priority: boolean;
   prediction: boolean;
   predictionWindow: number;

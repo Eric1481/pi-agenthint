@@ -336,6 +336,12 @@ export function dropUndefined(object) {
  * than from protocol facts, and a missing estimate is indistinguishable to the engine from an
  * estimate it decided not to act on.
  *
+ * `cache_control` goes LAST — after `agent_status`, i.e. only `session` outranks it. Retention is
+ * the one declaration whose loss is unrecoverable: once the declaration is absent the consumer
+ * has no retention bias at all, whereas a dropped `agent_status` only costs the consumer one
+ * state observation. A dropped declaration is also invisible on the wire, so the retention
+ * intent would disappear exactly when the context is largest and retention matters most.
+ *
  * @param {Record<string, unknown>} hint validated hint.
  * @param {(value: Record<string, unknown>) => number} sizeOf measures the encoded size.
  * @param {number} [maxBytes] budget.
@@ -347,7 +353,7 @@ export function fitToBudget(hint, sizeOf, maxBytes = MAX_HINT_BYTES) {
 
   const dropped = [];
   let current = hint;
-  for (const group of ['prediction', 'priority', 'strict_priority', 'cache_control', 'agent_status']) {
+  for (const group of ['prediction', 'priority', 'strict_priority', 'agent_status', 'cache_control']) {
     if (current[group] === undefined) continue;
     const next = { ...current };
     delete next[group];

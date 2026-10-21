@@ -21,6 +21,19 @@ test('configuration rejects unknown fields and implicit coercion', () => {
     (error) => error instanceof ConfigError && error.path === 'reporting.url');
 });
 
+test('cacheTtlS distinguishes "derive", "pin only" and "fixed"', () => {
+  // Absent (and null) means derive from runtime signals; 0 disables the ephemeral entry; a
+  // positive integer fixes the window. Collapsing these would make "auto" and "off" the same.
+  assert.equal(parseConfig({}).cacheTtlS, null);
+  assert.equal(parseConfig({ cacheTtlS: null }).cacheTtlS, null);
+  assert.equal(parseConfig({ cacheTtlS: 0 }).cacheTtlS, 0);
+  assert.equal(parseConfig({ cacheTtlS: 300 }).cacheTtlS, 300);
+  assert.throws(() => parseConfig({ cacheTtlS: -1 }),
+    (error) => error instanceof ConfigError && error.path === 'cacheTtlS');
+  assert.throws(() => parseConfig({ cacheTtlS: '300' }),
+    (error) => error instanceof ConfigError && error.path === 'cacheTtlS');
+});
+
 test('reporting requires an explicit http endpoint', () => {
   assert.throws(() => parseConfig({ reporting: { enabled: true } }),
     (error) => error instanceof ConfigError && error.path === 'reporting.endpoint');
