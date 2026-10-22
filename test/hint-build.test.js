@@ -164,28 +164,29 @@ test('a summarization request publishes no cache control, because it must not ev
   assert.equal(hint.cache_control, undefined);
 });
 
-test('cache control ranges describe the conversation the request is about to send', () => {
+test('cache control declares one breakpoint at the end of the stable prefix', () => {
   const hint = buildHint().hint;
   assert.deepEqual(hint.cache_control, [
-    { type: 'pin', range: { end: 1, unit: 'message' } },
     { type: 'ephemeral', ttl_s: 600, range: { end: 2, unit: 'message' } },
   ]);
   // The logical sequence is [systemPrompt, ...context.messages], never the append-only session
   // history: compaction and branching rewrite the context that actually reaches the model.
   const longer = buildHint({ contextMessageCount: 5 }).hint;
-  assert.equal(longer.cache_control[1].range.end, 6);
+  assert.equal(longer.cache_control[0].range.end, 6);
 });
 
-test('a zero TTL publishes the pin alone rather than an entry with no lifetime', () => {
+test('a zero TTL publishes no cache control at all', () => {
+  // `pin` is retired: without an explicit TTL there is nothing to declare, and an entry that
+  // carries no lifetime would only occupy header budget.
   const config = { ...CONFIG, cacheTtlS: 0 };
   const hint = buildHint({ config }).hint;
-  assert.deepEqual(hint.cache_control, [{ type: 'pin', range: { end: 1, unit: 'message' } }]);
+  assert.equal(hint.cache_control, undefined);
 });
 
 test('the retention window follows the observed gap rather than a fixed default', () => {
   // The next tool's own budget is the most accurate signal the harness has.
   const withTool = buildHint({ stats: { nextTool: { name: 'bash', expectedDurationS: 120, prob: 0.8 } } }).hint;
-  assert.deepEqual(withTool.cache_control[1], {
+  assert.deepEqual(withTool.cache_control[0], {
     type: 'ephemeral',
     ttl_s: 240,
     range: { end: 2, unit: 'message' },
@@ -193,14 +194,14 @@ test('the retention window follows the observed gap rather than a fixed default'
 
   // 12 s * 2 = 24 s sits below the protocol floor, so the declaration is raised to 60 s.
   const shortTool = buildHint({ stats: { nextTool: { name: 'read', expectedDurationS: 12, prob: 0.9 } } }).hint;
-  assert.equal(shortTool.cache_control[1].ttl_s, 60);
+  assert.equal(shortTool.cache_control[0].ttl_s, 60);
 
   // Without a tool prediction the observed inter-call interval decides.
   const byInterval = buildHint({ stats: { intervalMs: 90_000 } }).hint;
-  assert.equal(byInterval.cache_control[1].ttl_s, 180);
+  assert.equal(byInterval.cache_control[0].ttl_s, 180);
 
   // With nothing observed the protocol default gap applies, doubled by the safety factor.
-  assert.equal(buildHint().hint.cache_control[1].ttl_s, 600);
+  assert.equal(buildHint().hint.cache_control[0].ttl_s, 600);
 });
 
 test('a gap beyond the protocol ceiling clamps to the ceiling instead of dropping the TTL', () => {
@@ -210,7 +211,6 @@ test('a gap beyond the protocol ceiling clamps to the ceiling instead of droppin
   // window it can express.
   const hint = buildHint({ stats: { nextTool: { name: 'approval', expectedDurationS: 7200, prob: 1 } } }).hint;
   assert.deepEqual(hint.cache_control, [
-    { type: 'pin', range: { end: 1, unit: 'message' } },
     { type: 'ephemeral', ttl_s: build.TTL_MAX_S, range: { end: 2, unit: 'message' } },
   ]);
 });
@@ -218,7 +218,7 @@ test('a gap beyond the protocol ceiling clamps to the ceiling instead of droppin
 test('an explicitly configured TTL overrides the derived one', () => {
   const config = { ...CONFIG, cacheTtlS: 300 };
   const hint = buildHint({ config, stats: { nextTool: { name: 'bash', expectedDurationS: 120, prob: 0.8 } } }).hint;
-  assert.equal(hint.cache_control[1].ttl_s, 300);
+  assert.equal(hint.cache_control[0].ttl_s, 300);
 });
 
 test('estimateTtlS prefers the tool budget, then the interval, then the default', () => {

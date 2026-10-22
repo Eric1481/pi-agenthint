@@ -165,7 +165,6 @@ test('with the capability on, the header decodes to a valid hint', () => {
   assert.equal(typeof round.decoded.agent_status.state_since_ms, 'number');
   assert.deepEqual(round.decoded.priority, { level: 3, reason: 'user_waiting' });
   assert.deepEqual(round.decoded.cache_control, [
-    { type: 'pin', range: { end: 1, unit: 'message' } },
     { type: 'ephemeral', ttl_s: 600, range: { end: 2, unit: 'message' } },
   ]);
   assert.equal(round.body.agent_hint, undefined, 'the payload-era field is gone');

@@ -201,21 +201,27 @@ export function deriveCacheControl(input) {
   const logicalMessageCount = contextMessageCount + (systemPromptPresent ? 1 : 0);
   if (logicalMessageCount < 1) return undefined;
 
-  const controls = [];
-  // DSH establishes the shared convention: message range [0, 1) is the effective system prompt.
-  // State the unit explicitly so a consumer never has to infer whether `end` counts messages or
-  // provider-specific tokens.
-  if (systemPromptPresent) {
-    controls.push({ type: 'pin', range: { end: 1, unit: 'message' } });
-  }
-  if (cacheTtlS > 0) {
-    controls.push({
+  // One breakpoint, at the end of the stable prefix this request actually carries.
+  //
+  // Two decisions shaped this:
+  //   * `pin` is retired. It never had a behaviour of its own on the consuming side (the type was
+  //     only logged), while its name promised a hard guarantee no layer could honour. Dynamo
+  //     removed its equivalent and the vLLM RFC dropped Pin outright, so the label is gone here
+  //     too; a declaration is a retention request, not a lock.
+  //   * The second breakpoint earned nothing. The consumer folds an array into "widest end plus
+  //     longest explicit TTL", so a shorter entry at the system prompt contributed no behaviour —
+  //     it only doubled the bytes and implied a segmentation the pipeline does not implement.
+  //
+  // `end` is the whole logical input (system prompt included) because the cached unit is the
+  // prefix: asking to keep the tail implicitly keeps everything before it.
+  if (!(cacheTtlS > 0)) return undefined;
+  return [
+    {
       type: 'ephemeral',
       ttl_s: cacheTtlS,
       range: { end: logicalMessageCount, unit: 'message' },
-    });
-  }
-  return controls.length > 0 ? controls : undefined;
+    },
+  ];
 }
 
 /**
