@@ -25,6 +25,13 @@ const { validateAgentHint } = await import(pathToFileURL(join(pluginRoot, 'src',
 const SESSION_ID = 'sess-hint-header';
 
 /**
+ * Long enough to clear the one-block minimum (128 estimated tokens): the declaration path is only
+ * meaningful for prefixes the engine can actually store, so the shared fixture has to look like a
+ * real prompt rather than a three-word stub.
+ */
+const LONG_SYSTEM_PROMPT = `effective system prompt ${'lorem ipsum '.repeat(60)}`;
+
+/**
  * Load the extension against a recording host.
  *
  * @param {Record<string, unknown>} rawConfig configuration to parse and inject.
@@ -55,13 +62,13 @@ function loadExtension(rawConfig, options = {}) {
 /**
  * @returns {{ mode: string, hasUI: boolean, cwd: string, ui: object, sessionManager: object }} minimal context.
  */
-function context() {
+function context(systemPrompt = LONG_SYSTEM_PROMPT) {
   return {
     mode: 'rpc',
     hasUI: false,
     cwd: process.cwd(),
     ui: { notify() {}, setStatus() {} },
-    getSystemPrompt: () => 'effective system prompt',
+    getSystemPrompt: () => systemPrompt,
     sessionManager: {
       getSessionId: () => SESSION_ID,
       // Deliberately disagree with the provider context: cache ranges must not use the append-only

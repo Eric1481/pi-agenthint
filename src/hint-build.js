@@ -144,12 +144,61 @@ export function derivePriority(snapshot) {
  */
 export const TTL_MIN_S = 60;
 export const TTL_MAX_S = 3600;
-
 /** How much slack to add over the estimated gap: under-estimating means no protection at all. */
 export const TTL_SAFETY_FACTOR = 2;
 
 /** Gap assumed when nothing has been observed yet (protocol default). */
 export const TTL_FALLBACK_GAP_S = 300;
+
+/**
+ * Minimum prefix size the engine can cache, in tokens.
+ *
+ * The engine stores KV per block (128 tokens on the rigs we measure) and hashes whole blocks; a
+ * prefix below one block is never stored, so a retention declaration for it protects nothing.
+ * The comparison uses an estimate, so it is deliberately conservative: it only suppresses
+ * declarations for prefixes that are clearly below one block.
+ */
+export const MIN_CACHEABLE_PREFIX_TOKENS = 128;
+
+/** Characters per token assumed for non-CJK text when estimating a prefix size. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Estimate the token count of a message list without a tokenizer.
+ *
+ * CJK code points count as one token each (they are close to one token per character in the
+ * tokenizers we serve), everything else at {@link CHARS_PER_TOKEN}. The estimate is used only to
+ * decide whether a prefix can occupy at least one block, never to size a TTL.
+ *
+ * @param {readonly unknown[]} messages message list in provider order.
+ * @returns {number} estimated tokens, never negative.
+ */
+export function estimatePrefixTokens(messages) {
+  if (!Array.isArray(messages)) return 0;
+  let cjk = 0;
+  let other = 0;
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      for (const ch of value) {
+        const code = ch.codePointAt(0);
+        if (code >= 0x2e80 && code <= 0x9fff) cjk += 1;
+        else if (code >= 0xf900 && code <= 0xfaff) cjk += 1;
+        else if (code >= 0xff00 && code <= 0xffef) cjk += 1;
+        else other += 1;
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const item of Object.values(value)) walk(item);
+    }
+  };
+  walk(messages);
+  return cjk + Math.ceil(other / CHARS_PER_TOKEN);
+}
 
 /**
  * Estimate how long the prefix will stay usable, from the runtime signals Pi already has.
@@ -196,10 +245,16 @@ export function estimateTtlS(signals = {}) {
  * @returns {Array<Record<string, unknown>> | undefined} the declaration, if any.
  */
 export function deriveCacheControl(input) {
-  const { contextMessageCount, systemPromptPresent, cacheTtlS } = input;
+  const { contextMessageCount, systemPromptPresent, cacheTtlS, prefixTokens } = input;
   if (!Number.isSafeInteger(contextMessageCount) || contextMessageCount < 0) return undefined;
   const logicalMessageCount = contextMessageCount + (systemPromptPresent ? 1 : 0);
   if (logicalMessageCount < 1) return undefined;
+
+  // A prefix shorter than one cache block is never stored, so declaring retention for it asks the
+  // engine to keep something that does not exist. Unknown size (no context event) is treated as
+  // large enough: refusing to declare on missing telemetry would silently disable retention for
+  // every provider that does not report message sizes.
+  if (Number.isFinite(prefixTokens) && prefixTokens < MIN_CACHEABLE_PREFIX_TOKENS) return undefined;
 
   // One breakpoint, at the end of the stable prefix this request actually carries.
   //
@@ -391,6 +446,7 @@ export function buildAgentHint(input) {
       contextMessageCount: input.contextMessageCount,
       systemPromptPresent: input.systemPromptPresent === true,
       cacheTtlS: ttlS ?? 0,
+      prefixTokens: input.prefixTokens,
     });
     if (control !== undefined) hint.cache_control = control;
   }

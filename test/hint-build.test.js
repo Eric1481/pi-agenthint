@@ -393,3 +393,30 @@ test('agent_status publishes the tools being awaited, with their call ids', () =
   assert.equal(hint.agent_status.reason, 'await_tool');
   assert.deepEqual(hint.agent_status.tools, [{ name: 'read', call_id: 'call-9' }]);
 });
+
+
+test('a prefix shorter than one cache block is not declared', () => {
+  // The engine stores KV per block and hashes whole blocks: a prefix below one block is never
+  // stored, so a retention declaration for it would protect nothing.
+  const tiny = buildHint({ prefixTokens: build.MIN_CACHEABLE_PREFIX_TOKENS - 1 }).hint;
+  assert.equal(tiny.cache_control, undefined);
+
+  const justEnough = buildHint({ prefixTokens: build.MIN_CACHEABLE_PREFIX_TOKENS }).hint;
+  assert.equal(justEnough.cache_control.length, 1);
+
+  // Unknown size keeps the declaration: refusing on missing telemetry would disable retention for
+  // every provider that does not report message sizes.
+  const unknown = buildHint({ prefixTokens: undefined }).hint;
+  assert.equal(unknown.cache_control.length, 1);
+});
+
+test('the prefix size estimate counts CJK by character and other text by four characters', () => {
+  assert.equal(build.estimatePrefixTokens([]), 0);
+  assert.equal(build.estimatePrefixTokens(['abcd']), 1);
+  assert.equal(build.estimatePrefixTokens(['abcde']), 2);
+  // CJK is close to one token per character for the tokenizers we serve.
+  assert.equal(build.estimatePrefixTokens(['你好世界']), 4);
+  // Nested content (message parts) is walked, not stringified: 8 characters of text plus the
+  // 4-character role name round up to three tokens.
+  assert.equal(build.estimatePrefixTokens([{ role: 'user', content: [{ text: 'abcdefgh' }] }]), 3);
+});

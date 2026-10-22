@@ -2,7 +2,7 @@ import { SessionManager, VERSION } from '@earendil-works/pi-coding-agent';
 import { existsSync } from 'node:fs';
 
 import { parseConfig, resolveConfig } from './config.js';
-import { HINT_HEADER, buildAgentHint, encodeAgentHint } from './hint-build.js';
+import { HINT_HEADER, buildAgentHint, encodeAgentHint, estimatePrefixTokens } from './hint-build.js';
 import { createStatusReporter, resolveStrictPriority } from './hint-control.js';
 import { readHintCheckpoint, writeHintCheckpoint } from './hint-recovery.js';
 import { createHintState } from './hint-state.js';
@@ -49,6 +49,7 @@ function extension(pi, options = {}) {
   let currentSessionId;
   let currentContextMessageCount;
   let currentSystemPromptPresent;
+  let currentPrefixTokens;
   let requestMessageCount = 0;
   let lastHint;
   let lastSkip;
@@ -189,6 +190,7 @@ function extension(pi, options = {}) {
         config,
         contextMessageCount: currentContextMessageCount,
         systemPromptPresent: currentSystemPromptPresent === true,
+        prefixTokens: currentPrefixTokens,
         stats: stats.snapshot(sessionId, snapshot.agentType, requestAt),
         strictPriority: strict.binding,
       });
@@ -253,6 +255,7 @@ function extension(pi, options = {}) {
     lastSkip = undefined;
     currentContextMessageCount = undefined;
     currentSystemPromptPresent = undefined;
+    currentPrefixTokens = undefined;
     reportStatus();
     if (ctx?.mode === 'tui' && loadResult.error !== undefined) {
       ctx.ui.notify(`pi-agenthint configuration error; disabled: ${loadResult.error}`, 'error');
@@ -333,6 +336,7 @@ function extension(pi, options = {}) {
       if (messages === undefined) {
         currentContextMessageCount = undefined;
         currentSystemPromptPresent = undefined;
+        currentPrefixTokens = undefined;
         return;
       }
       currentSystemPromptPresent = messages[0]?.role === 'system';
@@ -340,6 +344,9 @@ function extension(pi, options = {}) {
         && Array.isArray(message.content) && message.content.length === 0);
       currentContextMessageCount = hasEmptyAssistant
         ? undefined : messages.length - (currentSystemPromptPresent ? 1 : 0);
+      // Only a prefix of at least one engine block can be cached at all; a shorter declaration
+      // would ask the engine to retain something it never stores.
+      currentPrefixTokens = hasEmptyAssistant ? undefined : estimatePrefixTokens(messages);
     });
     pi.on('before_provider_headers', (event, ctx) => attach(event, ctx));
     pi.on('before_provider_request', (event) => {
