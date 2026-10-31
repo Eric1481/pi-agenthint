@@ -134,7 +134,7 @@ PI_AGENTHINT_CONFIG=/absolute/path/to/agenthint.json pi
 | `humanInputWaitMs` | integer | `60000` | Expected non-approval human-input wait budget. |
 | `cacheControl` | boolean | `true` | Publish provider-visible logical message ranges. |
 | `cacheTtlS` | integer \| null | `null` | Retention seconds for the ephemeral range. `null` derives it from the observed gap (next tool's expected duration, else the inter-call interval, else 300 s, doubled and clamped to 60–3600); `0` sends no declaration at all; a number fixes it. |
-| `priority` | boolean | `true` | Publish the locally derived advisory priority. |
+| `priority` | boolean | `true` | Publish the locally derived advisory priority. Levels are binary: `3` when a person is waiting on this request, `1` otherwise; `reason` carries the detail (`user_waiting` / `critical_path` / `background`). |
 | `prediction` | boolean | `true` | Publish estimates only after enough completed observations exist. |
 | `predictionWindow` | integer | `20` | Maximum recent samples retained per bounded statistics bucket. |
 | `predictionPolicy` | string | `"p90"` | Collapse observations using `mean`, `p50`, or `p90`. |

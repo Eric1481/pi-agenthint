@@ -139,7 +139,7 @@ test('the published hint is always valid against its own protocol', () => {
 
 test('priority ranks a person who is waiting above background work', () => {
   const resumed = snapshotOf({ resumedFrom: 'human_approval', status: { state: 'running', since: 1 } });
-  assert.deepEqual(build.derivePriority(resumed, {}), { level: 4, reason: 'user_waiting' });
+  assert.deepEqual(build.derivePriority(resumed, {}), { level: 3, reason: 'user_waiting' });
 
   // The first request of a run is the one a person is watching; later requests of the same run
   // are work the agent chose to do.
@@ -147,12 +147,12 @@ test('priority ranks a person who is waiting above background work', () => {
   assert.deepEqual(build.derivePriority(opening, {}), { level: 3, reason: 'user_waiting' });
 
   const midRun = snapshotOf({ openingRequest: false, callIndex: 2 });
-  assert.deepEqual(build.derivePriority(midRun, {}), { level: 2, reason: 'critical_path' });
+  assert.deepEqual(build.derivePriority(midRun, {}), { level: 1, reason: 'critical_path' });
 
   // A request sent before any user run was opened is not something a person is waiting on, so it
   // must not claim the interactive reason even though it is still critical work.
   const preRun = snapshotOf({ openingRequest: false, callIndex: 1 });
-  assert.deepEqual(build.derivePriority(preRun, {}), { level: 2, reason: 'critical_path' });
+  assert.deepEqual(build.derivePriority(preRun, {}), { level: 1, reason: 'critical_path' });
 
   const compacting = snapshotOf({ compactionArmed: true });
   assert.deepEqual(build.derivePriority(compacting, {}), { level: 1, reason: 'background' });
@@ -419,4 +419,40 @@ test('the prefix size estimate counts CJK by character and other text by four ch
   // Nested content (message parts) is walked, not stringified: 8 characters of text plus the
   // 4-character role name round up to three tokens.
   assert.equal(build.estimatePrefixTokens([{ role: 'user', content: [{ text: 'abcdefgh' }] }]), 3);
+});
+
+test('priority levels fold onto the two-level contract', () => {
+  // The consumer only compares against one admission line, so a level outside {1, 3} would be a
+  // claim it cannot honour. Legacy 2/4 fold to the side of the line they already landed on.
+  assert.equal(build.normalizePriorityLevel(1), 1);
+  assert.equal(build.normalizePriorityLevel(2), 1);
+  assert.equal(build.normalizePriorityLevel(3), 3);
+  assert.equal(build.normalizePriorityLevel(4), 3);
+  assert.equal(build.normalizePriorityLevel(90), 3);
+  assert.equal(build.normalizePriorityLevel(0), 1);
+  assert.equal(build.normalizePriorityLevel(-5), 1);
+  assert.equal(build.normalizePriorityLevel(undefined), 1);
+  assert.equal(build.PRIORITY_INTERACTIVE, 3);
+  assert.equal(build.PRIORITY_BACKGROUND, 1);
+
+  // Every state the builder can emit stays inside the contract and keeps its reason.
+  const snapshots = [
+    snapshotOf({ resumedFrom: 'human_approval', status: { state: 'running', since: 1 } }),
+    snapshotOf({ compactionArmed: true }),
+    snapshotOf({ branchArmed: true }),
+    snapshotOf({ openingRequest: true, callIndex: 1 }),
+    snapshotOf({ openingRequest: false, callIndex: 2 }),
+    snapshotOf({ openingRequest: false, callIndex: 1 }),
+  ];
+  for (const snapshot of snapshots) {
+    const priority = build.derivePriority(snapshot, {});
+    assert.ok([1, 3].includes(priority.level), `level ${priority.level} is outside the contract`);
+    assert.ok(typeof priority.reason === 'string' && priority.reason.length > 0);
+  }
+
+  // reason still distinguishes the two non-interactive cases.
+  const reasons = new Set(snapshots.map((s) => build.derivePriority(s, {}).reason));
+  assert.ok(reasons.has('user_waiting'));
+  assert.ok(reasons.has('critical_path'));
+  assert.ok(reasons.has('background'));
 });

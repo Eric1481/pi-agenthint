@@ -337,7 +337,7 @@ test('a completed human wait is not restated as a future wait on the resumed req
   host.handlers.get('ui_prompt_end')({ kind: 'confirm' }, context());
 
   const resumed = providerRound(host).decoded;
-  assert.deepEqual(resumed.priority, { level: 4, reason: 'user_waiting' });
+  assert.deepEqual(resumed.priority, { level: 3, reason: 'user_waiting' });
   assert.equal(resumed.prediction?.expected_resume_s, undefined);
 
   // The agent then does something new, so the resume stops being the salient fact and the engine
@@ -348,7 +348,7 @@ test('a completed human wait is not restated as a future wait on the resumed req
   assert.equal(later.session.call_index, 2, 'the second request of the conversation');
   // A continuation belongs to a run that is already open, so it is critical work but it is not
   // the request a person is waiting on.
-  assert.deepEqual(later.priority, { level: 2, reason: 'critical_path' });
+  assert.deepEqual(later.priority, { level: 1, reason: 'critical_path' });
   assert.equal(later.prediction?.expected_resume_s, undefined);
 });
 

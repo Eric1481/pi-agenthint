@@ -1,6 +1,6 @@
 {
   "name": "pi-agenthint",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Agent Hint request metadata and lifecycle reporting for Pi",
   "type": "module",
   "license": "Apache-2.0",

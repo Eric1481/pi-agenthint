@@ -120,16 +120,44 @@ export function decodeAgentHint(value) {
  * @param {import('./hint-state.js').HintSnapshot} snapshot state at the moment of the request.
  * @returns {{ level: number, reason: string }} the priority, or a zero-level fallback.
  */
+/**
+ * Two-level priority contract.
+ *
+ * The consumer only compares `priority.level` against one admission line, so a value outside
+ * these two tiers is a claim it cannot honour: three- and four-level scales invite callers to
+ * invent distinctions that the scheduling path collapses anyway. Richness lives in `reason`,
+ * which stays a free-form audit string.
+ *
+ * `level >= 3` is the interactive tier (a person is blocked on this request); everything else
+ * folds to `1`. Folding legacy values on the way out keeps old and new senders equivalent:
+ * 2 → 1 and 4 → 3 land on exactly the side of the line they landed on before.
+ */
+export const PRIORITY_INTERACTIVE = 3;
+export const PRIORITY_BACKGROUND = 1;
+
+/** Fold any level onto the two-level contract (>= the admission line becomes the tier above it). */
+export function normalizePriorityLevel(level) {
+  return Number.isFinite(level) && level >= PRIORITY_INTERACTIVE
+    ? PRIORITY_INTERACTIVE
+    : PRIORITY_BACKGROUND;
+}
+
 export function derivePriority(snapshot) {
-  if (snapshot.resumedFrom !== undefined) return { level: 4, reason: 'user_waiting' };
-  if (snapshot.compactionArmed || snapshot.branchArmed) return { level: 1, reason: 'background' };
+  if (snapshot.resumedFrom !== undefined) {
+    return { level: normalizePriorityLevel(4), reason: 'user_waiting' };
+  }
+  if (snapshot.compactionArmed || snapshot.branchArmed) {
+    return { level: normalizePriorityLevel(2), reason: 'background' };
+  }
   // The first request of a run is the one a person is waiting on; every later request of the
   // same run is work the agent decided to do by itself. A request sent outside any run belongs
   // to neither case -- it is not something a person is waiting on -- so it never claims the
-  // interactive reason. Note that this decides the *reason*, not the level: a continuation and
-  // an unowned request are both critical work, and only the explanation differs.
-  if (snapshot.openingRequest !== true) return { level: 2, reason: 'critical_path' };
-  return { level: 3, reason: 'user_waiting' };
+  // interactive reason. Note that this decides the *reason*, not the tier: a continuation and
+  // an unowned request are both non-interactive, and only the explanation differs.
+  if (snapshot.openingRequest !== true) {
+    return { level: normalizePriorityLevel(2), reason: 'critical_path' };
+  }
+  return { level: normalizePriorityLevel(3), reason: 'user_waiting' };
 }
 
 /**
