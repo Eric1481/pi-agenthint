@@ -36,6 +36,18 @@ pi install npm:pi-agenthint
 Installing the package is the opt-in. Header injection is enabled by default; the optional
 out-of-band reporting channel remains disabled until explicitly configured.
 
+**Upgrading.** `pi update npm:pi-agenthint` moves an unpinned install to the latest release. An
+install that pinned a version (`pi install npm:pi-agenthint@0.1.1`) stays pinned by design — reinstall
+without the version to follow releases:
+
+```sh
+pi install npm:pi-agenthint          # unpin and move to the current release
+```
+
+Upgrading matters for anything before `0.2.0`: those releases send a two-entry `cache_control`
+array whose first entry carries no TTL, and consumers that parse only the first entry silently drop
+the retention request.
+
 Do not enable this package alongside an AscendAgent-Pi release that still contains its embedded
 Agent Hint implementation. Both producers refuse to overwrite an existing `X-Agent-Hint`, so
 only the first loaded producer will send a value.
