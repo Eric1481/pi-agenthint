@@ -234,38 +234,34 @@ test('call_index advances with each request while the session id stays put', () 
   assert.equal(first.session.session_id, second.session.session_id);
 });
 
-test('the tool loop publishes tool, then running, on the requests that follow', () => {
+test('the tool loop folds the wire state to pause while a tool is awaited', () => {
   const host = loadExtension({ version: 1, agentHint: { enabled: true } });
   host.handlers.get('session_start')({ reason: 'new' }, context());
   host.handlers.get('tool_execution_start')({ toolName: 'read', toolCallId: 'call-1' }, context());
   const whileTool = providerRound(host);
-  // A request cannot normally be sent while a tool runs, but the header hook must still describe
-  // the state honestly if it is: `tool` with the awaited call is the exact case the protocol has
-  // a `tools[]` array for.
-  assert.equal(whileTool.decoded.agent_status.state, 'tool');
-  assert.deepEqual(whileTool.decoded.agent_status.tools, [{ name: 'read', call_id: 'call-1' }]);
+  // 简化字段 RFC §3.3.2：等工具返回属于"等外部事件"，wire 状态折成 pause，
+  // 且不带 tools[]（tools 只在事件通道出现）。
+  assert.equal(whileTool.decoded.agent_status.state, 'pause');
+  assert.equal(whileTool.decoded.agent_status.tools, undefined);
 
   host.handlers.get('tool_execution_end')({ toolName: 'read', toolCallId: 'call-1' });
   const afterTool = providerRound(host);
   assert.equal(afterTool.decoded.agent_status.state, 'running');
-  assert.equal(afterTool.decoded.agent_status.reason, undefined);
 });
 
-test('nested Pi 1.1 tool calls stay behind their model-visible parent', () => {
+test('并行工具期间 wire 状态始终是 pause', () => {
   const host = loadExtension({ version: 1, agentHint: { enabled: true } });
   host.handlers.get('session_start')({ reason: 'new' }, context());
   host.handlers.get('tool_execution_start')({ toolName: 'codemode', toolCallId: 'parent' });
   host.handlers.get('tool_execution_start')({
     toolName: 'read', toolCallId: 'parent/1', parentToolCallId: 'parent',
   });
-  assert.deepEqual(providerRound(host).decoded.agent_status.tools, [
-    { name: 'codemode', call_id: 'parent' },
-  ]);
+  assert.equal(providerRound(host).decoded.agent_status.state, 'pause');
 
   host.handlers.get('tool_execution_end')({
     toolName: 'read', toolCallId: 'parent/1', parentToolCallId: 'parent', durationMs: 1,
   });
-  assert.equal(providerRound(host).decoded.agent_status.state, 'tool');
+  assert.equal(providerRound(host).decoded.agent_status.state, 'pause');
   host.handlers.get('tool_execution_end')({ toolName: 'codemode', toolCallId: 'parent', durationMs: 10 });
   assert.equal(providerRound(host).decoded.agent_status.state, 'running');
 });
@@ -352,19 +348,24 @@ test('a completed human wait is not restated as a future wait on the resumed req
   assert.equal(later.prediction?.expected_resume_s, undefined);
 });
 
-test('a successful compaction advances the context epoch and drops the cache intent', () => {
+test('a successful compaction advances the context epoch and the summary request carries no hint', () => {
   const host = loadExtension({ version: 1, agentHint: { enabled: true } });
   host.handlers.get('session_start')({ reason: 'new' }, context());
   assert.equal(providerRound(host).decoded.session.epoch, 0);
 
+  // The armed window (session_before_compact → session_compact) is exactly the summarization
+  // request: per RFC §1.3 it is an auxiliary request and must go out bare -- not even the
+  // session identity rides along, and it consumes no call_index slot, so the epoch boundary
+  // and the request sequence are both unaffected.
   host.handlers.get('session_before_compact')({}, context());
-  const during = providerRound(host).decoded;
-  assert.equal(during.cache_control, undefined, 'a one-off summarization prompt must not evict a live prefix');
-  assert.deepEqual(during.priority, { level: 1, reason: 'background' });
+  const during = providerRound(host);
+  assert.equal(during.decoded, undefined, 'a summarization request is auxiliary and carries no hint');
+  assert.equal(during.headers['X-Agent-Hint'], undefined);
 
   host.handlers.get('session_compact')({}, context());
   const after = providerRound(host).decoded;
   assert.equal(after.session.epoch, 1, 'the conversation the engine was caching no longer exists');
+  assert.equal(after.session.call_index, 2, 'the bare summary request is invisible to the sequence');
 });
 
 test('the trusted control plane is the only source of strict priority', () => {
@@ -409,12 +410,16 @@ test('state events are reported out of band, and the pause is one of them', asyn
   host.handlers.get('ui_prompt_start')({ kind: 'confirm' }, context());
   host.handlers.get('ui_prompt_end')({ kind: 'confirm' }, context());
   host.handlers.get('agent_settled')({}, context());
+  host.handlers.get('session_shutdown')({}, context());
   await new Promise((resolve) => { setTimeout(resolve, 20); });
 
   const states = events.map((event) => event.agent_status.state);
   assert.ok(states.includes('running'), `expected a running event, saw ${JSON.stringify(states)}`);
   assert.ok(states.includes('pause'), `expected a pause event, saw ${JSON.stringify(states)}`);
-  assert.ok(states.includes('finalize'), `expected a finalize event, saw ${JSON.stringify(states)}`);
+  // settle 之后、shutdown 之前没有任何新事件（事件数不再增长），finalize 只在 shutdown 出现。
+  assert.equal(states.filter((state) => state === 'finalize').length, 1, 'finalize is once per session');
+  assert.equal(states.at(-1), 'finalize', 'only session_shutdown reports finalize, and it is the last event');
+  assert.equal(states.at(-2), 'running', 'a settled run does not report finalize');
   const pause = events.find((event) => event.agent_status.state === 'pause');
   assert.equal(pause.agent_status.reason, 'human_approval');
   assert.equal(pause.session.session_id, SESSION_ID);
@@ -437,7 +442,10 @@ test('out-of-band tool events carry the complete parallel Pi tool set', async ()
   host.handlers.get('tool_execution_end')({ toolName: 'read', toolCallId: 'b' });
   await new Promise((resolve) => { setTimeout(resolve, 20); });
 
-  const toolEvents = events.filter((event) => event.agent_status.state === 'tool');
+  // 事件通道词表只有 running/pause/finalize：等工具的事件态是 pause，
+  // tools[] 在这条 pause 事件上带出"正在等谁"。
+  const toolEvents = events.filter((event) => event.agent_status.state === 'pause'
+    && Array.isArray(event.agent_status.tools));
   assert.ok(toolEvents.some((event) => event.agent_status.tools.length === 2));
   const task = toolEvents.flatMap((event) => event.agent_status.tools).find((tool) => tool.call_id === 'a');
   assert.deepEqual(task, { name: 'task', call_id: 'a' });
@@ -460,11 +468,13 @@ test('suspend refreshes the wait prediction on the out-of-band channel', async (
   host.handlers.get('session_start')({ reason: 'new' }, context());
   host.handlers.get('ui_prompt_start')({ kind: 'confirm' }, context());
   await new Promise((resolve) => { setTimeout(resolve, 20); });
-  const pause = events.find((event) => event.agent_status.state === 'pause');
-  const suspend = events.find((event) => event.agent_status.state === 'suspend');
-  assert.ok(pause && suspend);
-  assert.ok(suspend.prediction.expected_resume_s <= pause.prediction.expected_resume_s);
-  assert.deepEqual(suspend.prediction.next_action, { state: 'running' });
+  // 事件通道没有 suspend 这个取值：等待超阈值与等审批一样，都是 pause。
+  // 两次上报靠 prediction.expected_resume_s 变化区分（去重签名含它）。
+  const pauses = events.filter((event) => event.agent_status.state === 'pause');
+  assert.ok(pauses.length >= 2);
+  const [first, last] = [pauses[0], pauses.at(-1)];
+  assert.ok(last.prediction.expected_resume_s <= first.prediction.expected_resume_s);
+  assert.deepEqual(last.prediction.next_action, { state: 'running' });
 });
 
 test('a fork survives extension reload and uses Pi resolved context as its message boundary', (t) => {

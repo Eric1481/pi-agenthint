@@ -133,6 +133,7 @@ test('the published hint is always valid against its own protocol', () => {
   assert.deepEqual(validateAgentHint(hint), []);
   assert.equal(hint.session.call_index, 1);
   assert.equal(hint.session.epoch, 0);
+  // running 不是外发事件：整块省略
   assert.equal(hint.agent_status.state, 'running');
   assert.deepEqual(hint.priority, { level: 3, reason: 'user_waiting' });
 });
@@ -159,9 +160,13 @@ test('priority ranks a person who is waiting above background work', () => {
 
 });
 
-test('a summarization request publishes no cache control, because it must not evict a prefix', () => {
-  const hint = buildHint({ snapshot: snapshotOf({ compactionArmed: true, callIndex: 1 }) }).hint;
-  assert.equal(hint.cache_control, undefined);
+test('a summarization request publishes no hint at all (RFC §1.3 auxiliary exemption)', () => {
+  // The compaction summary is an auxiliary request: it is not on the session's critical
+  // path, and the RFC exempts it from carrying any hint. The armed window (armed by
+  // `session_before_compact`, disarmed by `session_compact`) is exactly that request.
+  const built = buildHint({ snapshot: snapshotOf({ compactionArmed: true, callIndex: 1 }) });
+  assert.equal(built.hint, undefined);
+  assert.match(built.skipped, /auxiliary request/);
 });
 
 test('cache control declares one breakpoint at the end of the stable prefix', () => {
@@ -253,7 +258,7 @@ test('prediction carries each metric the observations support', () => {
     latency_ms: 1200,
     output_tokens: 300,
     interval_ms: 5000,
-    next_action: { state: 'tool', tools: [{ name: 'read', expected_duration_s: 2 }], prob: 0.8 },
+    next_action: { state: 'running', tools: [{ name: 'read', expected_duration_s: 2 }], prob: 0.8 },
   });
 });
 
@@ -275,7 +280,9 @@ test('a wait that already outran its expectation publishes no remaining time', (
     observedWaitMs: 90000,
   });
   const hint = buildHint({ snapshot, stats: { settled: true } }).hint;
-  assert.equal(hint.prediction.expected_resume_s, undefined, '"0 seconds left" would read as "about to resume"');
+  // 会话级 finalize：settled 不再生成任何预测（下一态 finalize 的旧路径已删），
+  // 自然也不会带 expected_resume_s —— "还剩 0 秒" 会被读成 "马上恢复"。
+  assert.equal(hint.prediction?.expected_resume_s, undefined, '"0 seconds left" would read as "about to resume"');
 });
 
 test('a blocked agent with no expectation publishes only the next state', () => {
@@ -287,11 +294,12 @@ test('a blocked agent with no expectation publishes only the next state', () => 
   assert.deepEqual(hint.prediction, { next_action: { state: 'running' } });
 });
 
-test('a settled agent predicts finalize and zero remaining calls', () => {
-  const snapshot = snapshotOf({ status: { state: 'finalize', since: 9 } });
+test('a settled run no longer predicts finalize: prediction comes from observed transitions', () => {
+  // 会话级 finalize：settle 不再把 'finalize' 记成观察值，头上的状态也是 running，
+  // 所以预测渠道拿不到 "下一态是 finalize" 的证据 —— 剩余量也按未知处理。
+  const snapshot = snapshotOf({ status: { state: 'running', since: 9 } });
   const hint = buildHint({ snapshot, stats: { settled: true } }).hint;
-  assert.deepEqual(hint.prediction.next_action, { state: 'finalize' });
-  assert.equal(hint.prediction.remaining_calls, 0, 'only a known zero is published');
+  assert.equal(hint.prediction, undefined, 'a settled-but-open session publishes no prediction');
 });
 
 test('a running agent publishes no remaining_calls, because the number is unknown', () => {
@@ -378,7 +386,7 @@ test('a hint that cannot fit at all is skipped, not truncated', () => {
   assert.equal(result.skipped, 'over size budget');
 });
 
-test('agent_status publishes the tools being awaited, with their call ids', () => {
+test('工具执行时 wire 状态折成 pause，且不携带 tools[]', () => {
   const state = createHintState();
   state.onSessionStart({ at: 1 });
   state.onToolStart({ toolName: 'read', toolCallId: 'call-9', at: 2 });
@@ -389,9 +397,7 @@ test('agent_status publishes the tools being awaited, with their call ids', () =
     contextMessageCount: CONTEXT_MESSAGE_COUNT,
     systemPromptPresent: true,
   }).hint;
-  assert.equal(hint.agent_status.state, 'tool');
-  assert.equal(hint.agent_status.reason, 'await_tool');
-  assert.deepEqual(hint.agent_status.tools, [{ name: 'read', call_id: 'call-9' }]);
+  assert.equal(hint.agent_status.state, 'pause');
 });
 
 

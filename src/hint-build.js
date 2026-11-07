@@ -347,26 +347,27 @@ export function derivePrediction(input) {
  * Predict the next lifecycle state, using only observed facts.
  *
  * Ordered by how certain each case is: a blocked agent -- or one that has just come back from a
- * block -- can only resume; a finished run can only finalize; a turn that just ran a tool is
- * very likely to run another (which is why the probability travels with the prediction instead
- * of being implied).
+ * block -- can only resume; a turn that just ran a tool is very likely to run another (which is
+ * why the probability travels with the prediction instead of being implied). A settled run
+ * predicts nothing here: finalize is session-level (fires at session close, see hint-state
+ * `onShutdown`), so "run finished" no longer implies "next state finalize".
  *
  * @param {Record<string, unknown>} stats observed distribution.
  * @param {import('./hint-state.js').AgentStatus} status current lifecycle state.
  * @returns {Record<string, unknown> | undefined} `next_action`, or undefined when nothing is known.
  */
 export function deriveNextAction(stats, status) {
+  // 预测用完整生命周期词汇：被卡住的 agent 接下来会回到 running。
   if (status.state === 'pause' || status.state === 'suspend') {
     return { state: 'running' };
-  }
-  if (stats.settled === true) {
-    return { state: 'finalize' };
   }
   if (stats.nextState !== null && typeof stats.nextState === 'object') {
     const action = /** @type {Record<string, unknown>} */ (stats.nextState);
     if (typeof action.state === 'string') {
       return dropUndefined({
-        state: action.state,
+        // `tool` 不再是状态：下一次调工具就是"继续干活"，用 running 表达，
+        // 具体调什么由 next_action.tools 说。
+        state: action.state === 'tool' || action.state === 'suspend' ? 'running' : action.state,
         prob: typeof action.prob === 'number' ? Number(action.prob.toFixed(2)) : undefined,
       });
     }
@@ -376,7 +377,7 @@ export function deriveNextAction(stats, status) {
     const tool = /** @type {Record<string, unknown>} */ (nextTool);
     if (typeof tool.name === 'string' && tool.name !== '') {
       return {
-        state: 'tool',
+        state: 'running',
         tools: [{ name: tool.name, expected_duration_s: typeof tool.expectedDurationS === 'number' ? tool.expectedDurationS : 0 }],
         prob: typeof tool.prob === 'number' ? Number(tool.prob.toFixed(2)) : undefined,
       };
@@ -412,6 +413,17 @@ export function buildAgentHint(input) {
   const { snapshot, identity, config } = input;
   const maxBytes = input.maxBytes ?? undefined;
 
+  // RFC §1.3 / §3.3.5: auxiliary requests (the compaction summary, session titles) carry no
+  // hint at all -- they are not on the session's critical path, and decorating them just
+  // makes the engine track metadata for a request nobody schedules. Pi arms
+  // `session_before_compact` before issuing the summarization request and disarms on
+  // `session_compact` / `session_compact_failed`, so the armed window IS the auxiliary
+  // request window. The earlier behaviour only suppressed `cache_control` here, which still
+  // published session/agent_status/priority on a request the RFC exempts.
+  if (snapshot.compactionArmed === true) {
+    return { skipped: 'auxiliary request (compaction window, RFC §1.3: no hint)' };
+  }
+
   if (typeof identity.sessionId !== 'string' || identity.sessionId === '') {
     // Without a session there is nothing for the engine to attach the metadata to, so the
     // honest outcome is to send no hint rather than a stub with a synthetic id.
@@ -422,12 +434,15 @@ export function buildAgentHint(input) {
   const session = {
     session_id: publishableSessionId(identity.sessionId),
   };
-  if (snapshot.relation === 'fork' && identity.parentSessionId !== undefined && identity.parentSessionId !== '') {
-    session.parent_session_id = publishableSessionId(identity.parentSessionId);
-    session.derivation = dropUndefined({
-      relation: 'fork',
-      fork_point: snapshot.forkPoint,
-    });
+  // Lineage is published only when this session really has a parent: `fork` is Pi's own session
+  // lifecycle event, while `spawn` can only come from the deployment that created this session.
+  const parentId = snapshot.parentSessionId ?? identity.parentSessionId;
+  if ((snapshot.relation === 'fork' || snapshot.relation === 'spawn')
+    && typeof parentId === 'string' && parentId !== '') {
+    session.parent_session_id = publishableSessionId(parentId);
+    session.derivation = snapshot.relation === 'spawn'
+      ? { relation: 'spawn', join: snapshot.join ?? 'sync' }
+      : dropUndefined({ relation: 'fork', fork_point: snapshot.forkPoint });
   }
   if (typeof snapshot.agentType === 'string' && snapshot.agentType !== '') session.agent_type = snapshot.agentType;
   if (snapshot.callIndex >= 1) session.call_index = snapshot.callIndex;
@@ -437,16 +452,16 @@ export function buildAgentHint(input) {
   const hint = { session };
 
   const status = snapshot.status;
+  // `agent_status` 只带 state 与 state_since_ms：reason/tools 是排障细节，不占 header 预算。
+  // 内部 `tool`/`suspend` 都不是对外状态——按简化字段 RFC §3.3.2 折叠表，两者在消费侧
+  // 都是"在等外部事件"（工具返回、人等审批），出口一律折成 `pause`；`running` 只表示
+  // 本地还在生成/计算。
+  const wireState = status.state === 'suspend' || status.state === 'tool'
+    ? 'pause'
+    : status.state;
   /** @type {Record<string, unknown>} */
-  const agentStatus = { state: status.state };
+  const agentStatus = { state: wireState };
   if (typeof status.since === 'number' && Number.isFinite(status.since)) agentStatus.state_since_ms = status.since;
-  if (typeof status.reason === 'string' && status.reason !== '') agentStatus.reason = status.reason;
-  if (Array.isArray(status.tools) && status.tools.length > 0) {
-    agentStatus.tools = status.tools.map((tool) => dropUndefined({
-      name: tool.name,
-      call_id: tool.call_id,
-    }));
-  }
   hint.agent_status = agentStatus;
 
   if (config.priority === true) hint.priority = dropUndefined(derivePriority(snapshot));

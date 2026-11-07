@@ -10,6 +10,19 @@ import { createHintStats } from './hint-stats.js';
 
 const VERIFIED_PI_VERSIONS = ['1.1.0'];
 
+/**
+ * 内部状态 → 状态事件词表（简化字段 RFC §3.3.2 / §3.5.2.3）。
+ *
+ * 事件通道只有三值 `running | pause | finalize`，`resume` 不作为事件存在：
+ * - `tool` / `suspend` 在消费侧都是"在等外部事件"（工具返回、人等审批）→ `pause`；
+ * - `resume`（一次性边）只在请求头里报一次，事件里回落成 `running`。
+ */
+const EVENT_STATE = { tool: 'pause', suspend: 'pause', resume: 'running' };
+
+function eventState(state) {
+  return EVENT_STATE[state] ?? state;
+}
+
 function extension(pi, options = {}) {
   for (const method of ['registerCommand', 'on']) {
     if (typeof pi?.[method] !== 'function') throw new Error(`pi-agenthint requires ExtensionAPI.${method}`);
@@ -128,7 +141,7 @@ function extension(pi, options = {}) {
           } }),
         },
         agent_status: {
-          state: snapshot.status.state,
+          state: eventState(snapshot.status.state),
           ...(typeof snapshot.status.since === 'number' ? { state_since_ms: snapshot.status.since } : {}),
           ...(snapshot.status.reason === undefined ? {} : { reason: snapshot.status.reason }),
           ...(Array.isArray(snapshot.status.tools) ? { tools: snapshot.status.tools.map((tool) => ({
@@ -179,6 +192,16 @@ function extension(pi, options = {}) {
         return;
       }
       const sessionId = sessionKey(ctx);
+      // RFC §1.3 / §3.3.5: the compaction summary window (armed by `session_before_compact`,
+      // disarmed by `session_compact` / `session_compact_failed`) is an auxiliary request. It
+      // carries no hint at all and is invisible to the hint sequence: it consumes neither a
+      // call_index slot nor checkpoint state. buildAgentHint applies the same skip on its own,
+      // so direct builders of the armed snapshot see the identical exemption.
+      if (state.snapshot().compactionArmed === true) {
+        counters.skipped += 1;
+        lastSkip = 'auxiliary request (compaction window, RFC §1.3: no hint)';
+        return;
+      }
       const callIndex = state.beginRequest();
       checkpoint();
       const snapshot = { ...state.snapshot(), callIndex };
@@ -246,6 +269,9 @@ function extension(pi, options = {}) {
       reason: event?.reason,
       parentSessionId: fork?.parentSessionId,
       forkPoint: fork?.forkPoint,
+      // Pi has no native subagent event, so a spawn can only be reported when the process that
+      // started this session declares it. `fork` from Pi's own lifecycle event still wins.
+      lineage: config.lineage,
       recovered,
     });
     currentSessionId = sessionId;
@@ -350,7 +376,11 @@ function extension(pi, options = {}) {
     });
     pi.on('before_provider_headers', (event, ctx) => attach(event, ctx));
     pi.on('before_provider_request', (event) => {
-      requestMessageCount = Array.isArray(event?.payload?.messages) ? event.payload.messages.length : 0;
+      const messages = Array.isArray(event?.payload?.messages) ? event.payload.messages : [];
+      requestMessageCount = messages.length;
+      // 上下文被重写但没有 compact 事件时（真机上的溢出裁剪正是如此），用条数回落兜底 +1。
+      // 这里拿到的是本次 provider 载荷的真实条数，和 header 里 range.end 的口径一致。
+      if (messages.length > 0) state.noteLogicalCount(messages.length);
     });
   }
 

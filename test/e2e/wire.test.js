@@ -117,7 +117,10 @@ test('real Pi sends X-Agent-Hint to a mock provider without changing the body',
     assert.equal(typeof hint.session?.session_id, 'string');
     assert.ok(hint.session.session_id.length > 0);
     assert.equal(hint.session.call_index, 1);
-    assert.equal(hint.agent_status?.state, 'running');
+    assert.equal(hint.agent_status.state, 'running');
+    assert.equal(typeof hint.agent_status.state_since_ms, 'number');
+    assert.equal(hint.agent_status.reason, undefined);
+    assert.equal(hint.agent_status.tools, undefined);
     assert.equal(request.body.agent_hint, undefined, 'Agent Hint must not alter the provider body');
     assert.equal(request.body.model, 'mock');
   });

@@ -296,7 +296,8 @@ export function createHintStats(options = {}) {
     observeSettled(sessionId, at) {
       const stats = record(sessionId);
       stats.settled = true;
-      observeAction(stats, { state: 'finalize' });
+      // 会话级 finalize：run 结束不代表下一状态是 finalize（会话还开着），所以这里
+      // 不再把 'finalize' 记成 next_action 观察值；轮间间隔的隔离仍由下面清零完成。
       stats.intervalCandidate = undefined;
       stats.inFlightProvider = undefined;
       const calls = stats.providerOrdinal;

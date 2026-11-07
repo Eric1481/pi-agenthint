@@ -159,7 +159,11 @@ test('a finished human wait is reported once and then retired by the next action
   assert.equal(resumed.resumedFrom, 'human_approval');
   assert.equal(resumed.observedWaitMs, 40000);
   assert.equal(resumed.expectedWaitMs, 300000);
-  assert.equal(resumed.status.state, 'running');
+  // resume 是状态不是事件：被放行的这一次请求报 resume，之后回到 running。
+  assert.equal(resumed.status.state, 'resume');
+
+  state.markResumeReported();
+  assert.equal(state.snapshot().status.state, 'running');
 
   // A tool call is a new action, so "we just resumed" stops being the salient fact and the
   // engine is not asked to warm the prefix again on every remaining turn of the run.
@@ -212,14 +216,28 @@ test('a branch summary is armed only when a summary was actually requested', () 
   assert.equal(state.snapshot().branchArmed, false);
 });
 
-test('agent_settled is the only automatic end of a run', () => {
+test('agent_settled ends the run without finalizing the session', () => {
   const { state } = machine();
   state.onSessionStart({ at: 1000 });
   state.onTurnStart({ turnIndex: 1, timestamp: 1100 });
   assert.equal(state.snapshot().status.state, 'running', 'a finished turn is not a finished run');
   state.onSettled(9000);
-  assert.equal(state.snapshot().status.state, 'finalize');
-  assert.equal(state.snapshot().status.since, 9000);
+  // 会话级 finalize：run 结束只是回到空闲 running，会话还开着，不得报 finalize。
+  assert.equal(state.snapshot().status.state, 'running', 'a settled run leaves the session in running');
+  assert.equal(state.snapshot().inRun, false);
+  state.onShutdown(12000);
+  assert.equal(state.snapshot().status.state, 'finalize', 'only session shutdown finalizes');
+  assert.equal(state.snapshot().status.since, 12000);
+});
+
+test('onSettled does not clobber an unreported resume', () => {
+  const { state } = machine();
+  state.onSessionStart({ at: 1000 });
+  state.onPauseStart({ kind: 'confirm', at: 2000 });
+  state.onPauseEnd({ kind: 'confirm', at: 9000 });
+  state.onSettled(9500);
+  // resume 是一次性边：还没被任何请求上报前，settle 不得把它冲掉。
+  assert.equal(state.snapshot().status.state, 'resume');
 });
 
 test('only a Pi-confirmed fork creates a derivation', () => {
@@ -257,4 +275,49 @@ test('the same event sequence always yields the same snapshot', () => {
     return JSON.stringify(state.snapshot());
   };
   assert.equal(run(), run());
+});
+
+
+test('上下文条数回落时 epoch +1（没有 compact 事件也能识别重写）', () => {
+  const { state } = machine();
+  state.onSessionStart({ at: 1000 });
+
+  state.noteLogicalCount(10);
+  assert.equal(state.snapshot().epoch, 0, '首次只建立基线');
+
+  state.noteLogicalCount(12);
+  assert.equal(state.snapshot().epoch, 0, '增长不是重写');
+
+  assert.equal(state.noteLogicalCount(4), true);
+  assert.equal(state.snapshot().epoch, 1, '回落 → +1');
+
+  state.noteLogicalCount(6);
+  assert.equal(state.snapshot().epoch, 1, '回落之后恢复正常增长不再加');
+});
+
+test('compact 事件与条数回落不重复计数', () => {
+  const { state } = machine();
+  state.onSessionStart({ at: 1000 });
+  state.noteLogicalCount(20);
+
+  state.onBeforeCompact();
+  state.onCompactDone(2000);          // 事件已记账
+  state.noteLogicalCount(4);          // 同一条请求上再回落一次
+  assert.equal(state.snapshot().epoch, 1, '只 +1');
+
+  state.noteLogicalCount(6);
+  state.noteLogicalCount(2);          // 下一轮再回落
+  assert.equal(state.snapshot().epoch, 2, '下一轮回落照常 +1');
+});
+
+test('新会话重置条数基线', () => {
+  const { state } = machine();
+  state.onSessionStart({ at: 1000 });
+  state.noteLogicalCount(20);
+  state.noteLogicalCount(5);
+  assert.equal(state.snapshot().epoch, 1);
+
+  state.onSessionStart({ at: 2000 });
+  state.noteLogicalCount(3);          // 新会话第一次见到 3，不该和上个会话比
+  assert.equal(state.snapshot().epoch, 0);
 });

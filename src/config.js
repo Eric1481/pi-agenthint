@@ -28,6 +28,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   predictionMinSamples: 3,
   strictPriority: true,
   strictPriorityEnv: 'PI_AGENTHINT_STRICT_PRIORITY',
+  /** null = no parent; {relation, parent_session_id, join?, fork_point?} otherwise. */
+  lineage: null,
   reporting: Object.freeze({
     enabled: false,
     endpoint: '',
@@ -37,6 +39,38 @@ export const DEFAULT_CONFIG = Object.freeze({
     queueLimit: 64,
   }),
 });
+
+/**
+ * Lineage this deployment declares for the session it starts.
+ *
+ * Pi can observe a fork on its own, but it has no subagent mechanism: a `spawn` is only
+ * truthful when whatever started this process says so. The value is passed through verbatim
+ * (snake_case, as it appears on the wire) so the builder does not have to translate twice.
+ */
+function parsedLineage(value) {
+  if (value === undefined || value === null) return null;
+  const detail = object(value, 'lineage');
+  rejectUnknown(detail, ['relation', 'parent_session_id', 'join', 'fork_point'], 'lineage');
+  const relation = ['fork', 'spawn'].includes(detail.relation) ? detail.relation : undefined;
+  if (relation === undefined) throw new ConfigError('lineage.relation', 'expected fork or spawn');
+  const parent = detail.parent_session_id;
+  if (typeof parent !== 'string' || parent === '') {
+    throw new ConfigError('lineage.parent_session_id', 'expected a non-empty string');
+  }
+  const line = { relation, parent_session_id: parent };
+  if (relation === 'spawn') {
+    if (detail.join !== undefined && !['sync', 'async'].includes(detail.join)) {
+      throw new ConfigError('lineage.join', 'expected sync or async');
+    }
+    line.join = detail.join ?? 'sync';
+  } else if (detail.fork_point !== undefined) {
+    if (!Number.isSafeInteger(detail.fork_point) || detail.fork_point < 0) {
+      throw new ConfigError('lineage.fork_point', 'expected a non-negative integer');
+    }
+    line.fork_point = detail.fork_point;
+  }
+  return Object.freeze(line);
+}
 
 function object(value, path) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -111,6 +145,7 @@ export function parseConfig(value = {}) {
     'enabled', 'agentType', 'suspendAfterMs', 'humanApprovalWaitMs', 'humanInputWaitMs',
     'cacheControl', 'cacheTtlS', 'priority', 'prediction', 'predictionWindow',
     'predictionPolicy', 'predictionMinSamples', 'strictPriority', 'strictPriorityEnv', 'reporting',
+    'lineage',
   ];
   rejectUnknown(root, allowed, '');
   const reporting = object(root.reporting ?? {}, 'reporting');
@@ -145,6 +180,7 @@ export function parseConfig(value = {}) {
     predictionMinSamples: integer(root.predictionMinSamples, 'predictionMinSamples', DEFAULT_CONFIG.predictionMinSamples, 1),
     strictPriority: boolean(root.strictPriority, 'strictPriority', DEFAULT_CONFIG.strictPriority),
     strictPriorityEnv: envName(root.strictPriorityEnv, 'strictPriorityEnv', DEFAULT_CONFIG.strictPriorityEnv),
+    lineage: parsedLineage(root.lineage),
     reporting: resolvedReporting,
   };
 }

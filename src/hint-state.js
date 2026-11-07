@@ -28,13 +28,24 @@
  *   gate. "A human is blocking the agent" therefore needs no instrumentation in business code.
  *
  *   `agent_settled` is the only event that means "this run is over and nothing automatic
- *   follows" -- DSH's `idle` is not the same claim, and neither is `turn_end`.
+ *   follows" -- DSH's `idle` is not the same claim, and neither is `turn_end`. A finished
+ *   run is NOT a finished session: settle returns the session to idle `running`, and only
+ *   `session_shutdown` (the whole session closing) is a `finalize`.
  */
 
 import { DEFAULT_AGENT_TYPE } from './config.js';
 import { STATUS_REASONS } from './hint-schema.js';
 
-/** @typedef {'running' | 'tool' | 'pause' | 'suspend' | 'finalize'} AgentState */
+/** @typedef {'running' | 'tool' | 'pause' | 'resume' | 'suspend' | 'finalize'} AgentState */
+
+/**
+ * Session relations this extension can publish.
+ *
+ * `fork` comes from Pi's own session lifecycle event. Pi has no subagent mechanism, so `spawn`
+ * can only be truthful when the deployment that created this session declares the lineage
+ * (see `event.lineage` in onSessionStart).
+ */
+export const DECLARED_RELATIONS = ['fork', 'spawn'];
 
 /**
  * @typedef {object} AgentStatus
@@ -124,6 +135,10 @@ export function createHintState(options = {}) {
   let callIndex = 0;
   let epoch = 0;
   let turnIndex = 0;
+  /** 上一次请求看到的逻辑输入条数；没有 compact 事件时靠它识别上下文重写。 */
+  let lastLogicalCount;
+  /** 本轮是否已由 compact/tree 事件记过重写，避免与条数回落双重计数。 */
+  let rewriteCounted = false;
   /**
    * `undefined` when no user run is open, `null` when one is open but its opening request has not
    * been numbered yet, otherwise the call ordinal of that run's first request.
@@ -145,12 +160,14 @@ export function createHintState(options = {}) {
   let openPrompt;
   /** @type {string | undefined} */
   let lastToolName;
-  /** @type {'fork' | undefined} */
+  /** @type {'fork' | 'spawn' | undefined} */
   let relation;
   /** @type {string | undefined} */
   let parentSessionId;
   /** @type {number | undefined} */
   let forkPoint;
+  /** @type {'sync' | 'async' | undefined} */
+  let join;
   /** Agent type is fixed by validated plugin configuration for the life of this instance. */
   const agentType = typeof options.agentType === 'string' && options.agentType !== ''
     ? options.agentType
@@ -205,6 +222,9 @@ export function createHintState(options = {}) {
         ? event.recovered : undefined;
       callIndex = recovered?.callIndex ?? 0;
       epoch = recovered?.epoch ?? 0;
+      // 新的会话/恢复：条数基线与去重标记都归零，避免拿上一个会话的条数比降。
+      lastLogicalCount = undefined;
+      rewriteCounted = false;
       turnIndex = 0;
       runOpenedAt = undefined;
       compactionArmed = false;
@@ -218,12 +238,30 @@ export function createHintState(options = {}) {
         ? event.parentSessionId
         : recovered?.parentSessionId;
       // Pi 1.1 exposes fork as a session lifecycle event, but has no native spawn or handoff
-      // session mechanism. Publish a derivation only when that native fork is confirmed.
+      // session mechanism. A deployment that creates this session on someone else's behalf says
+      // so through `lineage`, which is the only way a spawn can be reported truthfully here --
+      // guessing one from the environment would fabricate an ancestry.
       relation = parentSessionId === undefined ? undefined : 'fork';
       const point = event.reason === 'fork' ? event.forkPoint : recovered?.forkPoint;
       forkPoint = relation === 'fork' && Number.isSafeInteger(point) && point >= 0
         ? point
         : undefined;
+      join = undefined;
+      const declared = event.lineage;
+      if (declared !== null && typeof declared === 'object' && typeof declared.relation === 'string'
+        && DECLARED_RELATIONS.includes(declared.relation)) {
+        relation = declared.relation;
+        if (typeof declared.parent_session_id === 'string' && declared.parent_session_id !== '') {
+          parentSessionId = declared.parent_session_id;
+        }
+        if (relation === 'fork' && Number.isSafeInteger(declared.fork_point) && declared.fork_point >= 0) {
+          forkPoint = declared.fork_point;
+        }
+        if (relation === 'spawn') {
+          join = declared.join === 'async' ? 'async' : 'sync';
+          forkPoint = undefined;
+        }
+      }
       state = 'running';
       reason = undefined;
       openTools = new Map();
@@ -243,7 +281,10 @@ export function createHintState(options = {}) {
       // fills the ordinal in and, crucially, keeps it -- which is what stops the second request
       // of a run from being mistaken for its first.
       runOpenedAt = null;
-      enter(state === 'tool' ? 'tool' : 'running', { at });
+      // `resume` is a live state, not an event: the request that follows a human interaction
+      // reports it until that request has been built (see markResumeReported), so recreating the
+      // state here must not silently downgrade it to `running`.
+      enter(state === 'tool' ? 'tool' : state === 'resume' ? 'resume' : 'running', { at });
     },
 
     onTurnStart(event = {}) {
@@ -314,7 +355,33 @@ export function createHintState(options = {}) {
       // Only a successful compaction rewrote the conversation, so only it advances the epoch.
       // A failed one changed nothing and must not announce a rewrite that never happened.
       epoch += 1;
+      rewriteCounted = true;
       enter('running', { at });
+    },
+
+    /**
+     * 请求边界记录本轮逻辑输入条数，回落即视为上下文被重写（epoch +1）。
+     *
+     * 真机上 Pi 的溢出恢复会直接裁掉旧消息，且**不派发 `session_compact`**；只靠事件会让
+     * epoch 永远停在 0。事件优先：同一轮里已经由 compact/tree 记过一次时，这里不再重复计。
+     *
+     * @param {number} count 本轮 [system?] + messages 的条数。
+     * @returns {boolean} 是否因为回落而 +1。
+     */
+    noteLogicalCount(count) {
+      if (!Number.isSafeInteger(count) || count < 0) return false;
+      const shrank = lastLogicalCount !== undefined && count < lastLogicalCount;
+      lastLogicalCount = count;
+      if (rewriteCounted) {
+        // 这一轮的重写已经由事件记过账，消费掉标记即可。
+        rewriteCounted = false;
+        return false;
+      }
+      if (shrank) {
+        epoch += 1;
+        return true;
+      }
+      return false;
     },
 
     onCompactFailed() {
@@ -332,6 +399,7 @@ export function createHintState(options = {}) {
       // Navigating the tree replaces the conversation the engine was caching, so the context
       // generation changes for the same reason a compaction changes it.
       epoch += 1;
+      rewriteCounted = true;
       enter('running', { at });
     },
 
@@ -356,7 +424,11 @@ export function createHintState(options = {}) {
       const kind = typeof event.kind === 'string' ? event.kind : prompt?.kind;
       openPrompt = undefined;
       resumedFrom = kind === 'confirm' || prompt?.approval === true ? 'human_approval' : 'human_input';
-      enter('running', { at });
+      // Enter `resume` rather than `running`: a consumer that only sees request headers cannot
+      // tell "the agent kept working" from "the agent was just let go by a person", and that is
+      // exactly the distinction the engine ranks on. The state persists until the request it
+      // describes has been emitted (markResumeReported), then falls back to `running`.
+      enter('resume', { at, reason: resumedFrom });
     },
 
     onSuspend(at) {
@@ -375,7 +447,11 @@ export function createHintState(options = {}) {
 
     onSettled(at) {
       runOpenedAt = undefined;
-      enter('finalize', { at });
+      // 会话级 finalize：run 结束 ≠ 会话结束。settle 只是回到空闲，消费者不应据此
+      // 释放会话资源（那是 finalize 的含义，见 onShutdown）。留在 running——若已经
+      // 是 running 则连 since 都不动（enter 的 keepSince），事件签名不变化也就不发新事件。
+      // `resume` 是一次性边且尚未上报时不能在这里被覆盖，与 onRunStart 的处理同理。
+      if (state !== 'resume') enter('running', { at });
     },
 
     onShutdown(at) {
@@ -383,6 +459,7 @@ export function createHintState(options = {}) {
       compactionArmed = false;
       branchArmed = false;
       openPrompt = undefined;
+      // 会话级 finalize：整个会话关闭才 finalize，一个会话至多这一次。
       enter('finalize', { at });
     },
 
@@ -401,6 +478,9 @@ export function createHintState(options = {}) {
     markResumeReported() {
       resumedFrom = undefined;
       observedWaitMs = undefined;
+      // The request that described the resume has been built, so the agent is simply running
+      // again: one report per human interaction, not a sticky state.
+      if (state === 'resume') enter('running', {});
     },
 
     snapshot() {
@@ -435,6 +515,7 @@ export function createHintState(options = {}) {
         openingRequest: runOpenedAt !== undefined && runOpenedAt === callIndex,
         relation,
         forkPoint,
+        join,
         parentSessionId,
         agentType,
       });

@@ -40,17 +40,19 @@ export const HINT_HEADER = 'X-Agent-Hint';
 export const MAX_HINT_BYTES = 4096;
 
 /** Derivation values this Pi integration can actually observe and publish. */
-export const DERIVATION_RELATIONS = ['fork'];
+export const DERIVATION_RELATIONS = ['fork', 'spawn', 'handoff'];
 
 /**
- * Values `agent_status.state` and `prediction.next_action.state` may take.
+ * Values `agent_status.state` may take (and, as a consequence, `prediction.next_action.state`).
  *
- * Deliberately NOT the host's own status vocabulary: DSH's `agent/status` only knows
- * `idle | running`, and the source document is explicit that its `tool`/`pause`/`suspend`/
- * `finalize` are AgentHint states that must not be conflated with the host's. `idle` in
- * particular is not this protocol's `finalize`.
+ * 以 DSH 已发布的协议为基准，只做一处调整：`suspend` 换成 `resume`——"等待超阈值"和"有人
+ * 卡住了"在消费侧并无区别，而"人放行了"是一个真实发生、且消费方需要的边。内部状态机仍然
+ * 保留 suspend，出口折成 `pause`。
+ *
+ * `agent_status` 只带 `state` 与 `state_since_ms`：`reason` 与 `tools` 属于排障用的细节，
+ * 放在随请求下发的 header 里既占预算又没人消费。
  */
-export const AGENT_STATES = ['running', 'tool', 'pause', 'suspend', 'finalize'];
+export const AGENT_STATES = ['running', 'pause', 'resume', 'finalize'];
 
 /** Values `cache_control[].type` may take. */
 export const CACHE_CONTROL_TYPES = ['pin', 'ephemeral'];
@@ -157,10 +159,17 @@ export function validateAgentHint(hint) {
       } else {
         const detail = /** @type {Record<string, unknown>} */ (derivation);
         if (!DERIVATION_RELATIONS.includes(/** @type {string} */ (detail.relation))) {
-          fail('session.derivation.relation must be fork');
+          fail(`session.derivation.relation must be one of ${DERIVATION_RELATIONS.join(', ')}`);
         }
         if (detail.join !== undefined) {
-          fail('session.derivation.join is unsupported by Pi');
+          // `join` says whether the parent blocks on the child, which is only a question for a
+          // spawned child; a fork has no parent waiting on it.
+          if (detail.relation !== 'spawn') {
+            fail('session.derivation.join is only defined for relation "spawn"');
+          }
+          if (!['sync', 'async'].includes(/** @type {string} */ (detail.join))) {
+            fail('session.derivation.join must be sync or async');
+          }
         }
         if (detail.fork_point !== undefined && !isNonNegativeNumber(detail.fork_point)) {
           fail('session.derivation.fork_point must be a non-negative number');
@@ -184,25 +193,6 @@ export function validateAgentHint(hint) {
       }
       if (block.state_since_ms !== undefined && !isNonNegativeNumber(block.state_since_ms)) {
         fail('agent_status.state_since_ms must be a non-negative number');
-      }
-      if (block.reason !== undefined && !isNonEmptyString(block.reason)) {
-        fail('agent_status.reason must be a non-empty string');
-      }
-      if (block.tools !== undefined) {
-        if (!Array.isArray(block.tools) || block.tools.length === 0) {
-          fail('agent_status.tools must be a non-empty array when present');
-        } else {
-          block.tools.forEach((tool, index) => {
-            if (!isPlainObject(tool) || !isNonEmptyString(/** @type {Record<string, unknown>} */ (tool).name)) {
-              fail(`agent_status.tools[${index}].name must be a non-empty string`);
-              return;
-            }
-            const item = /** @type {Record<string, unknown>} */ (tool);
-            if (item.call_id !== undefined && !isNonEmptyString(item.call_id)) {
-              fail(`agent_status.tools[${index}].call_id must be a non-empty string`);
-            }
-          });
-        }
       }
     }
   }

@@ -27,7 +27,7 @@ const {
 /** A minimal valid hint, spread into the negative cases below. */
 const valid = () => ({
   session: { session_id: 's-1', agent_type: 'office-agent', call_index: 1, epoch: 0 },
-  agent_status: { state: 'running', state_since_ms: 1000 },
+  agent_status: { state: 'pause', state_since_ms: 1000 },
   priority: { level: 3, reason: 'user_waiting' },
   cache_control: [{ type: 'pin', range: { end: 1 } }],
   prediction: { remaining_calls: 0, next_action: { state: 'finalize', prob: 0.9 } },
@@ -35,8 +35,9 @@ const valid = () => ({
 
 test('the vocabulary matches the Pi-supported AgentHint profile', () => {
   assert.equal(HINT_HEADER, 'X-Agent-Hint');
-  assert.deepEqual(AGENT_STATES, ['running', 'tool', 'pause', 'suspend', 'finalize']);
-  assert.deepEqual(DERIVATION_RELATIONS, ['fork']);
+  // 以 DSH 已发布的协议为基准，只把 suspend 换成 resume。
+  assert.deepEqual(AGENT_STATES, ['running', 'pause', 'resume', 'finalize']);
+  assert.deepEqual(DERIVATION_RELATIONS, ['fork', 'spawn', 'handoff']);
   assert.deepEqual(CACHE_CONTROL_TYPES, ['pin', 'ephemeral']);
   assert.deepEqual(HINT_MEMBERS, ['session', 'agent_status', 'priority', 'strict_priority', 'cache_control', 'prediction']);
 });
@@ -52,23 +53,31 @@ test('session is required and its sub-fields are checked', () => {
   assert.match(validateAgentHint({ session: { session_id: 's', epoch: -1 } })[0], /epoch must be an integer >= 0/);
   assert.match(
     validateAgentHint({ session: { session_id: 's', derivation: { relation: 'clone' } } })[0],
-    /relation must be fork/,
+    /relation must be one of fork, spawn/,
   );
 });
 
-test('Pi-unsupported derivation values are refused', () => {
+test('derivation accepts fork and spawn, and refuses what each cannot carry', () => {
+  // 两种 relation 都支持：fork 来自 Pi 的会话事件，spawn 由部署方声明。
   assert.deepEqual(validateAgentHint({
     session: { session_id: 's', derivation: { relation: 'spawn', join: 'async' } },
-  }), [
-    'session.derivation.relation must be fork',
-    'session.derivation.join is unsupported by Pi',
-  ]);
+  }), []);
+  assert.deepEqual(validateAgentHint({
+    session: { session_id: 's', derivation: { relation: 'fork', fork_point: 12 } },
+  }), []);
+  // join 只对 spawn 有意义，fork_point 只对 fork 有意义。
   assert.deepEqual(validateAgentHint({
     session: { session_id: 's', derivation: { relation: 'fork', join: 'sync' } },
-  }), ['session.derivation.join is unsupported by Pi']);
+  }), ['session.derivation.join is only defined for relation "spawn"']);
   assert.deepEqual(validateAgentHint({
-    session: { session_id: 's', derivation: { relation: 'handoff' } },
-  }), ['session.derivation.relation must be fork']);
+    session: { session_id: 's', derivation: { relation: 'spawn', fork_point: 3 } },
+  }), ['session.derivation.fork_point is only defined for relation "fork"']);
+  assert.deepEqual(validateAgentHint({
+    session: { session_id: 's', derivation: { relation: 'spawn', join: 'later' } },
+  }), ['session.derivation.join must be sync or async']);
+  assert.deepEqual(validateAgentHint({
+    session: { session_id: 's', derivation: { relation: 'adopted' } },
+  }), ['session.derivation.relation must be one of fork, spawn, handoff']);
 });
 
 test('agent_status rejects states outside the AgentHint vocabulary', () => {
@@ -79,9 +88,15 @@ test('agent_status rejects states outside the AgentHint vocabulary', () => {
     validateAgentHint({ session: { session_id: 's' }, agent_status: { state: 'idle' } }),
     ['agent_status.state is not a known value'],
   );
+  // suspend 已退役：不再接受
   assert.deepEqual(
-    validateAgentHint({ session: { session_id: 's' }, agent_status: { state: 'tool', tools: [] } }),
-    ['agent_status.tools must be a non-empty array when present'],
+    validateAgentHint({ session: { session_id: 's' }, agent_status: { state: 'suspend' } }),
+    ['agent_status.state is not a known value'],
+  );
+  // reason / tools 不再属于 agent_status：出现也不校验（消费方忽略）
+  assert.deepEqual(
+    validateAgentHint({ session: { session_id: 's' }, agent_status: { state: 'pause', reason: 'x', tools: [] } }),
+    [],
   );
 });
 
@@ -110,7 +125,7 @@ test('cache_control accepts one entry or an array, and refuses an inverted range
 
 test('prediction rejects a probability outside 0..1', () => {
   assert.deepEqual(
-    validateAgentHint({ session: { session_id: 's' }, prediction: { next_action: { state: 'tool', prob: 1.4 } } }),
+    validateAgentHint({ session: { session_id: 's' }, prediction: { next_action: { state: 'resume', prob: 1.4 } } }),
     ['prediction.next_action.prob must be within 0..1'],
   );
   assert.deepEqual(
@@ -119,15 +134,11 @@ test('prediction rejects a probability outside 0..1', () => {
   );
 });
 
-test('tool identifiers and predicted durations are type checked', () => {
-  assert.deepEqual(
-    validateAgentHint({ session: { session_id: 's' }, agent_status: { state: 'tool', tools: [{ name: 'task', call_id: 1 }] } }),
-    ['agent_status.tools[0].call_id must be a non-empty string'],
-  );
+test('predicted durations are type checked (agent_status 不再带 tools)', () => {
   assert.deepEqual(
     validateAgentHint({
       session: { session_id: 's' },
-      prediction: { next_action: { state: 'tool', tools: [{ name: 'search', expected_duration_s: -1 }] } },
+      prediction: { next_action: { state: 'resume', tools: [{ name: 'search', expected_duration_s: -1 }] } },
     }),
     ['prediction.next_action.tools[0].expected_duration_s must be a non-negative number'],
   );
