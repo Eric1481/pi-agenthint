@@ -13,11 +13,13 @@ const VERIFIED_PI_VERSIONS = ['1.1.0'];
 /**
  * 内部状态 → 状态事件词表（简化字段 RFC §3.3.2 / §3.5.2.3）。
  *
- * 事件通道只有三值 `running | pause | finalize`，`resume` 不作为事件存在：
+ * 事件通道与请求头**同一套四值** `running | pause | resume | finalize`（事件侧另
+ * 可带细分值 `tool`）：
  * - `tool` / `suspend` 在消费侧都是"在等外部事件"（工具返回、人等审批）→ `pause`；
- * - `resume`（一次性边）只在请求头里报一次，事件里回落成 `running`。
+ * - `resume` 是「人刚放行」的一次性边，事件通道同样发一条（与请求头同一时刻）。
+ *   2026-11-07 规格裁定：事件词表含 `resume`；此前把它折成 `running` 是错的。
  */
-const EVENT_STATE = { tool: 'pause', suspend: 'pause', resume: 'running' };
+const EVENT_STATE = { tool: 'pause', suspend: 'pause' };
 
 function eventState(state) {
   return EVENT_STATE[state] ?? state;
@@ -67,6 +69,9 @@ function extension(pi, options = {}) {
   let lastHint;
   let lastSkip;
   let lastReportedStatus;
+  // 事件通道上「这条 resume 边已经发过」的进入时刻。resume 是一次性边：同一条边
+  // 第二次上报要报成 running，否则消费方会以为又放行了一次。
+  let reportedResumeSince;
   let suspendTimer;
   const counters = { injected: 0, skipped: 0 };
 
@@ -128,9 +133,19 @@ function extension(pi, options = {}) {
         ? Math.max(0, Math.ceil((snapshot.expectedWaitMs
           - Math.max(0, at - (snapshot.waitStartedAt ?? at))) / 1000))
         : undefined;
-      const signature = JSON.stringify({ status: snapshot.status, expectedResumeS });
+      // resume 是一次性边：同一条边（同一个 state_since_ms）只报一次，之后再上报
+      // 报成 running——持续态是 running，边只标记「刚刚被放行」那一刻。
+      const rawState = snapshot.status.state;
+      const repeatEdge = rawState === 'resume'
+        && typeof snapshot.status.since === 'number'
+        && snapshot.status.since === reportedResumeSince;
+      const wireState = repeatEdge ? 'running' : eventState(rawState);
+      const signature = JSON.stringify({ status: snapshot.status, expectedResumeS, wireState });
       if (signature === lastReportedStatus) return;
       lastReportedStatus = signature;
+      if (rawState === 'resume' && !repeatEdge && typeof snapshot.status.since === 'number') {
+        reportedResumeSince = snapshot.status.since;
+      }
       reporter.send({
         session: {
           session_id: sessionKey(),
@@ -141,7 +156,7 @@ function extension(pi, options = {}) {
           } }),
         },
         agent_status: {
-          state: eventState(snapshot.status.state),
+          state: wireState,
           ...(typeof snapshot.status.since === 'number' ? { state_since_ms: snapshot.status.since } : {}),
           ...(snapshot.status.reason === undefined ? {} : { reason: snapshot.status.reason }),
           ...(Array.isArray(snapshot.status.tools) ? { tools: snapshot.status.tools.map((tool) => ({

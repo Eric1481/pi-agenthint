@@ -426,6 +426,13 @@ test('state events are reported out of band, and the pause is one of them', asyn
   assert.equal(typeof pause.prediction.expected_resume_s, 'number');
   assert.ok(pause.prediction.expected_resume_s > 0 && pause.prediction.expected_resume_s <= 300);
   assert.deepEqual(pause.prediction.next_action, { state: 'running' });
+
+  // 事件通道与请求头同一套四值：放行是一次性边，事件里也只发一条 resume
+  // （2026-11-07 规格裁定：事件词表含 resume，不再折成 running）。
+  const resumes = events.filter((event) => event.agent_status.state === 'resume');
+  assert.equal(resumes.length, 1, `a resume edge is reported exactly once, saw ${JSON.stringify(states)}`);
+  assert.equal(resumes[0].agent_status.reason, 'human_approval');
+  assert.equal(typeof resumes[0].agent_status.state_since_ms, 'number');
 });
 
 test('out-of-band tool events carry the complete parallel Pi tool set', async () => {
@@ -442,7 +449,7 @@ test('out-of-band tool events carry the complete parallel Pi tool set', async ()
   host.handlers.get('tool_execution_end')({ toolName: 'read', toolCallId: 'b' });
   await new Promise((resolve) => { setTimeout(resolve, 20); });
 
-  // 事件通道词表只有 running/pause/finalize：等工具的事件态是 pause，
+  // 事件通道词表是四值（另可带细分值 tool）：等工具的事件态折成 pause，
   // tools[] 在这条 pause 事件上带出"正在等谁"。
   const toolEvents = events.filter((event) => event.agent_status.state === 'pause'
     && Array.isArray(event.agent_status.tools));
