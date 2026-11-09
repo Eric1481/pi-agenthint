@@ -81,7 +81,11 @@ test('packed extension installs, exposes /agenthint once, and uninstalls in Pi 1
               assert.ok(requestedStatus, 'no unsolicited RPC UI events');
               const status = JSON.parse(event.message);
               assert.equal(status.package, 'pi-agenthint');
-              assert.equal(status.piVersion, '1.1.0');
+              // 宿主版本不要写死：这里跑的是仓内 devDependency 的 Pi，版本会随升级变化。
+              // 契约是「当前宿主版本在已验证清单里，且清单确实带版本号」。
+              assert.ok(Array.isArray(status.verifiedPiVersions) && status.verifiedPiVersions.length > 0);
+              assert.equal(status.hostVersionVerified, true,
+                `Pi ${status.piVersion} 不在已验证清单 ${JSON.stringify(status.verifiedPiVersions)} 里`);
               assert.equal(status.enabled, true);
               clearTimeout(timer);
               resolveDone();

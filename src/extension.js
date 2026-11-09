@@ -8,7 +8,7 @@ import { readHintCheckpoint, writeHintCheckpoint } from './hint-recovery.js';
 import { createHintState } from './hint-state.js';
 import { createHintStats } from './hint-stats.js';
 
-const VERIFIED_PI_VERSIONS = ['1.1.0'];
+const VERIFIED_PI_VERSIONS = ['1.1.0', '1.2.0'];
 
 /**
  * 内部状态 → 状态事件词表（简化字段 RFC §3.3.2 / §3.5.2.3）。

@@ -27,7 +27,7 @@ understand the header; the extension does not assume that an unsupported provide
 ## Install
 
 Requires Node.js 22.19 or newer and Pi with the provider-header lifecycle hooks. The package is
-verified against `@earendil-works/pi-coding-agent@1.1.0`.
+verified against `@earendil-works/pi-coding-agent@1.1.0` and `@1.2.0`.
 
 ```sh
 pi install npm:pi-agenthint
